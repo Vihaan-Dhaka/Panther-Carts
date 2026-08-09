@@ -8,13 +8,38 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-# Panther Carts — Instructions for Codex
+# Panther Carts — Codex Implementation Instructions
 
-## Required reading
+## Role
 
-Before making any product change, read `docs/PRODUCT_SPEC.md` in full. It is
-the authoritative requirements document. Also consult `docs/ARCHITECTURE.md`
-for layer boundaries and `docs/TICKETS.md` for work sequencing.
+Codex is the implementation agent. It may inspect, plan, edit, test, and
+document ticket work. Follow the lifecycle in
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md): every ticket
+starts from an updated `main` on its own branch, and Codex must never work
+directly on `main`.
+
+Before implementation, read the applicable ticket in `docs/TICKETS.md` and the
+relevant sections of the authoritative references:
+
+- `docs/PRODUCT_SPEC.md` — product requirements.
+- `docs/ARCHITECTURE.md` — layer boundaries.
+- `docs/DATABASE.md` — data model, invariants, and database testing.
+
+Consult any additional repository documentation relevant to the ticket. Do
+not copy the product specification into this file.
+
+## Implementation responsibilities
+
+- Preserve unrelated user changes. Do not discard, rewrite, or include them in
+  ticket commits.
+- Add regression tests for every behavior changed by the ticket.
+- Run every check relevant to the ticket. When database behavior is affected,
+  this includes the real PostgreSQL suite via `npm run test:db`; a run that
+  skips the database-dependent tests is not sufficient.
+- Commit and push only to the ticket branch. Never force-push.
+- Codex may open or update a pull request into `main`, but must never merge it.
+- Only one agent writes code at a time. Claude audits the resulting pull request
+  read-only.
 
 ## Hard rules
 
@@ -33,7 +58,6 @@ for layer boundaries and `docs/TICKETS.md` for work sequencing.
 - Application code depends on the `SmsProvider` interface
   (`src/lib/sms/types.ts`), never on a concrete SMS provider SDK.
 - Validate all external input with Zod schemas from `src/lib/validation/`.
-- Never force-push.
 
 ## Commands
 
@@ -45,6 +69,23 @@ for layer boundaries and `docs/TICKETS.md` for work sequencing.
 - `npm run test:unit` — Vitest unit tests (`tests/unit`)
 - `npm run test:integration` — Vitest integration tests (`tests/integration`)
 - `npm run test:e2e` — Playwright (`tests/e2e`)
+- `npm run db:start` — start the local PostgreSQL server
+- `npm run db:stop` — stop the local PostgreSQL server
+- `npm run db:reset` — recreate the local database and apply migrations
+- `npm run db:status` — show local PostgreSQL status and connection details
+- `npm run test:db` — reset and run the real-PostgreSQL test suite
 
 Run typecheck, lint, and the relevant tests before considering a change
 done.
+
+## Required handoff
+
+Codex's final ticket handoff must include:
+
+- Branch name and commit hash.
+- Files changed.
+- Behavior implemented.
+- Tests run with exact pass, fail, and skip counts.
+- Any tests not run or skipped, with the reason.
+- Known risks.
+- Manual configuration still required.

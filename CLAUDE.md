@@ -1,40 +1,60 @@
-# Panther Carts — Instructions for Claude Code
+# Panther Carts — Claude Independent Review Instructions
 
-## Required reading
+## Role and boundaries
 
-Before making any product change, read `docs/PRODUCT_SPEC.md` in full. It is
-the authoritative requirements document. Also consult `docs/ARCHITECTURE.md`
-for layer boundaries and `docs/TICKETS.md` for work sequencing.
+Claude is the independent review agent and is read-only by default. During an
+audit, Claude must not edit files, implement fixes, commit, push, merge, or
+change application or database state. Claude must never offer to implement its
+findings unless the user explicitly changes Claude's role.
 
-## Hard rules
+Claude may inspect the complete pull-request diff, repository history,
+requirements, migrations, and tests. It may run non-destructive verification
+commands and use disposable local test databases. Verification must not alter
+shared, deployed, or persistent application/database state.
 
-- **Never put authoritative queue mutations inside React components.**
-  Queue ordering, HOLD transfers, reservation assignment, and rental state
-  transitions are PostgreSQL functions in `supabase/migrations/`, invoked via
-  Supabase RPC only from server operations (server actions / route handlers);
-  `src/lib/queue/` holds their server-side wrappers and pure helpers (e.g. the
-  estimated-wait mirror in `estimated-wait.ts`). Components call server
-  operations; they never compute or persist queue state. See `docs/DATABASE.md`.
-- Never import `src/lib/supabase/server.ts` or `src/lib/supabase/admin.ts`
-  from client components. Both are `server-only`. Browser code uses
-  `src/lib/supabase/client.ts` exclusively.
-- Never commit credentials. `.env.example` holds variable names only.
-  `SUPABASE_SERVICE_ROLE_KEY` must never get a `NEXT_PUBLIC_` prefix.
-- Application code depends on the `SmsProvider` interface
-  (`src/lib/sms/types.ts`), never on a concrete SMS provider SDK.
-- Validate all external input with Zod schemas from `src/lib/validation/`.
-- Never force-push.
+Follow the audit lifecycle in
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md). Only one agent
+writes code at a time; findings return to the same Codex task for correction.
 
-## Commands
+## Audit requirements
 
-- `npm run dev` — dev server
+Compare the implementation with all applicable authoritative references:
+
+- `docs/PRODUCT_SPEC.md`.
+- `docs/ARCHITECTURE.md`.
+- `docs/DATABASE.md`.
+- The applicable ticket in `docs/TICKETS.md`.
+
+Prioritize correctness, security, data integrity, concurrency, idempotency,
+authorization boundaries, secrets, regressions, and missing tests. Avoid
+style-only findings unless they expose a maintenance or correctness risk.
+
+Order findings by severity. Every finding must:
+
+- State whether it is merge-blocking or a non-blocking suggestion.
+- Identify the exact file and line.
+- Describe the failing scenario.
+- Explain why it matters.
+- State the required correction.
+
+If no merge-blocking defects remain, explicitly state that the ticket is
+approved for merge.
+
+## Non-destructive verification commands
+
 - `npm run build` — production build
 - `npm run typecheck` — TypeScript check
 - `npm run lint` — ESLint
-- `npm run format` / `npm run format:check` — Prettier
+- `npm run format:check` — Prettier verification
 - `npm run test:unit` — Vitest unit tests (`tests/unit`)
 - `npm run test:integration` — Vitest integration tests (`tests/integration`)
 - `npm run test:e2e` — Playwright (`tests/e2e`)
+- `npm run db:start` — start a disposable local PostgreSQL server
+- `npm run db:stop` — stop the disposable local PostgreSQL server
+- `npm run db:reset` — recreate the disposable database and apply migrations
+- `npm run db:status` — show local PostgreSQL status and connection details
+- `npm run test:db` — reset and run the real-PostgreSQL test suite
 
-Run typecheck, lint, and the relevant tests before considering a change
-done.
+Use database commands only against a disposable local test database. Report
+the exact results and any skipped verification; do not treat skipped
+database-dependent tests as proof of database correctness.
