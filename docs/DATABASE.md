@@ -66,8 +66,20 @@ outcome recorded at return.
 - Durations positive: `sessions.rental_duration_minutes > 0`,
   `pickup_window_minutes > 0`.
 - Bin number unique per session: `unique (session_id, bin_number)`.
+- **Phone numbers are stored normalized**, enforced by
+  `check (phone = public.normalize_phone(phone))` on both `students` and
+  `queue_entries`. This makes normalized-phone uniqueness a storage invariant
+  rather than a convention each writer must remember, so `(404) 555-0123` and
+  `+14045550123` cannot both exist. A composite FK
+  `(student_id, phone) → students (id, phone)` keeps the denormalized copy on
+  `queue_entries` from drifting from its student.
 - **One active queue entry per phone per session**: partial unique index on
   `(session_id, phone) where status in ('WAITING','READY','CHECKED_OUT')`.
+- **Session-consistent relationships**: every table carrying a `session_id`
+  references its parents by composite key (`(id, session_id)` targets), so a
+  queue entry, reservation, rental, or outbox row can never reference a
+  student, bin, or entry belonging to a different session.
+- Every rental records `panthercard_collected_at` (`not null`).
 - **Pickup code unique among active READY entries**: partial unique index on
   `(session_id, pickup_code) where status = 'READY'`; format `^[0-9]{4}$`.
 - READY entries must carry `pickup_code`, `reserved_bin_id`, and
@@ -99,9 +111,20 @@ rental/reservation impossible.
 ## Idempotency
 
 - **checkout / return**: carry an idempotency key persisted on `rentals`
-  (`checkout_idempotency_key` / `return_idempotency_key`, uniquely indexed). A
-  replay with the same key returns the original rental with
-  `idempotent_replay: true` and performs no new side effects.
+  (`checkout_idempotency_key` / `return_idempotency_key`, uniquely indexed).
+  A missing or blank key is rejected (`IDEMPOTENCY_KEY_REQUIRED`) before any
+  state changes, and `rentals_returned_has_idem_key` guarantees a RETURNED
+  rental always carries one, so a return stays recognizable on retry.
+  Each key is bound to a **request fingerprint** stored alongside it
+  (`checkout_request_fingerprint` = session + pickup code + bin number;
+  `return_request_fingerprint` = session + bin number). Replay is only valid
+  when the key _and_ the fingerprint match — it then returns the original
+  rental with `idempotent_replay: true` and performs no new side effects. A key
+  reused with different arguments, or in a different session, raises
+  `IDEMPOTENCY_CONFLICT` instead of replaying an unrelated result.
+- **PantherCard confirmation** is checked with `is distinct from true`, so a
+  NULL confirmation is rejected. (`not NULL` evaluates to NULL under SQL
+  three-valued logic and would silently fall through.)
 - **expire_reservations**: naturally idempotent — it only acts on `ACTIVE`
   reservations whose `expires_at <= now()`. A second run finds none.
 - **notification creation**: every insert into `notification_outbox` uses a
@@ -139,14 +162,21 @@ times ascending (tie-break by `id`). For a waiting student at 1-based position
 `p` with `n` active OUT rentals:
 
 ```
-cycle = floor((p - 1) / n)
-index = (p - 1) mod n
-estimated_available_at = sorted_due_times[index] + cycle * rental_duration
-estimated_minutes      = max(0, ceil((estimated_available_at - now) / 60s))
+cycle   = floor((p - 1) / n)
+index   = (p - 1) mod n
+minutes = max(0, ceil((sorted_due_times[index] - now) / 60s))
+          + cycle * rental_duration
 ```
 
-An overdue rental contributes zero remaining minutes in its current cycle (the
-`max(0, …)` clamp). When `n = 0` there is no basis for an estimate, so the
+The current cycle's remaining time is clamped to zero **before** whole
+rental-duration cycles are added. An overdue rental therefore contributes zero
+remaining minutes for its own cycle without erasing the later cycles a student
+further back must still wait through. (Adding cycles to the historical due
+timestamp and clamping afterwards reports 0 minutes for _every_ position behind
+a long-overdue rental — e.g. one rental 120 minutes overdue with a 60-minute
+duration must yield 0, 60, 120 for positions 1–3, not 0, 0, 0.)
+
+When `n = 0` there is no basis for an estimate, so the
 function returns a **clearly-typed unavailable** result (`NULL` in SQL;
 `{ available: false }` in TypeScript) rather than inventing a time. When a bin
 is AVAILABLE the engine allocates it instead of leaving the student waiting.
@@ -165,6 +195,34 @@ caller; only the service role reads the data) and use database time for
 | `v_inventory`            | Every bin with status and current occupant/late flag. |
 | `v_session_rentals`      | All rentals in a session (full history).              |
 | `v_current_waitlist`     | WAITING entries ordered by rank.                      |
+
+## Testing strategy
+
+Two complementary integration layers:
+
+- **PGlite (`tests/integration/pglite-*`) — always runs.** Applies the real
+  migrations into an in-process PostgreSQL, so schema, constraints, and every
+  queue-engine function are genuinely executed. The database is rebuilt from
+  the migrations at the start of each run. Being single-connection, it proves
+  _logic_ and _guards_, not lock timing.
+- **Real PostgreSQL (`tests/integration/queue-engine.test.ts`,
+  `concurrency.test.ts`) — requires `DATABASE_URL`.** Multi-connection proofs
+  that cannot be simulated: the concurrency suite holds
+  `public.lock_session(...)` open in one transaction and asserts that
+  checkout / return / HOLD dispatched on _other_ connections genuinely
+  **block** until it is released (and that an unrelated session does not
+  block). It also forces both HOLD-wins and expiration-wins orderings
+  explicitly rather than relying on scheduler luck.
+
+Set **`REQUIRE_DB=1`** to make the real-PostgreSQL suites mandatory: without a
+connection string they fail loudly instead of skipping, so CI cannot report a
+green run that never exercised true concurrency.
+
+```bash
+npx supabase start
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+  REQUIRE_DB=1 npm run test:integration
+```
 
 ## Security foundation (and what remains for Ticket 6)
 

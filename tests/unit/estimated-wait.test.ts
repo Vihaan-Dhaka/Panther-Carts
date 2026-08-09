@@ -76,10 +76,31 @@ describe("estimateWaitMinutes", () => {
       available: true,
       minutes: 0,
     });
-    // Next cycle still counts: -15 + 60 = 45 minutes from now.
+    // The overdue amount must not eat into the next cycle: position two still
+    // waits a full rental duration after the bin comes back.
     expect(estimateWaitMinutes({ ...base, position: 2 })).toEqual({
       available: true,
-      minutes: 45,
+      minutes: 60,
+    });
+  });
+
+  it("does not let a long-overdue rental erase later cycles", () => {
+    // Regression: previously cycles were added to the historical due time and
+    // clamped afterwards, so positions 1-3 all reported 0 minutes.
+    const activeDueTimes = [minutesFromNow(-120)];
+    const base = { activeDueTimes, rentalDurationMinutes: 60, now: NOW };
+
+    expect(estimateWaitMinutes({ ...base, position: 1 })).toEqual({
+      available: true,
+      minutes: 0,
+    });
+    expect(estimateWaitMinutes({ ...base, position: 2 })).toEqual({
+      available: true,
+      minutes: 60,
+    });
+    expect(estimateWaitMinutes({ ...base, position: 3 })).toEqual({
+      available: true,
+      minutes: 120,
     });
   });
 

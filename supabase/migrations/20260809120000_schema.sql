@@ -12,6 +12,39 @@
 -- gen_random_uuid() is provided by core PostgreSQL (pg13+) on Supabase.
 
 -- ---------------------------------------------------------------------------
+-- normalize_phone
+-- ---------------------------------------------------------------------------
+-- Defined here (ahead of the tables) because check constraints below depend on
+-- it to make "normalized phone" a storage invariant rather than a convention
+-- every writer must remember. US-centric by documented assumption: a bare
+-- 10-digit number gets +1. Mirrored in src/lib/validation/phone.ts.
+create or replace function public.normalize_phone(p_phone text)
+returns text
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+  v_digits text;
+begin
+  if p_phone is null then
+    return null;
+  end if;
+  v_digits := regexp_replace(p_phone, '[^0-9]', '', 'g');
+  if v_digits = '' then
+    return '';
+  end if;
+  if char_length(v_digits) = 10 then
+    return '+1' || v_digits;
+  elsif char_length(v_digits) = 11 and left(v_digits, 1) = '1' then
+    return '+' || v_digits;
+  else
+    return '+' || v_digits;
+  end if;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Enums
 -- ---------------------------------------------------------------------------
 create type public.session_status as enum ('DRAFT', 'ACTIVE', 'CLOSED');
@@ -80,9 +113,17 @@ create table public.students (
   full_name text not null,
   panther_id text not null,
   email text not null,
-  -- Normalized to E.164 by public.normalize_phone() before insert.
+  -- Storage invariant: always the normalized (E.164-ish) form. The check makes
+  -- this true regardless of which writer inserts the row, so the "one active
+  -- entry per normalized phone per session" index below compares normalized
+  -- values rather than whatever text a caller happened to supply.
   phone text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint students_phone_normalized
+    check (phone = public.normalize_phone(phone)),
+  -- Targets for the composite (session-consistent) foreign keys below.
+  constraint students_id_session_uniq unique (id, session_id),
+  constraint students_id_phone_uniq unique (id, phone)
 );
 
 create index students_session_idx on public.students (session_id);
@@ -99,7 +140,8 @@ create table public.bins (
   status public.bin_status not null default 'AVAILABLE',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint bins_number_unique_per_session unique (session_id, bin_number)
+  constraint bins_number_unique_per_session unique (session_id, bin_number),
+  constraint bins_id_session_uniq unique (id, session_id)
 );
 
 create index bins_session_status_idx on public.bins (session_id, status);
@@ -113,12 +155,12 @@ create index bins_session_status_idx on public.bins (session_id, status);
 create table public.queue_entries (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.sessions (id) on delete cascade,
-  student_id uuid not null references public.students (id) on delete cascade,
+  student_id uuid not null,
   phone text not null,
   status public.queue_entry_status not null default 'WAITING',
   queue_rank integer,
   pickup_code text,
-  reserved_bin_id uuid references public.bins (id),
+  reserved_bin_id uuid,
   hold_used boolean not null default false,
   joined_at timestamptz not null default now(),
   ready_at timestamptz,
@@ -134,7 +176,22 @@ create table public.queue_entries (
       and reserved_bin_id is not null
       and pickup_expires_at is not null
     )
-  )
+  ),
+  constraint queue_entries_phone_normalized
+    check (phone = public.normalize_phone(phone)),
+  constraint queue_entries_id_session_uniq unique (id, session_id),
+  -- Session-consistent references: an entry cannot borrow a student or a bin
+  -- from another session, and its denormalized phone cannot drift from the
+  -- student it points at.
+  constraint queue_entries_student_fk
+    foreign key (student_id, session_id)
+    references public.students (id, session_id) on delete cascade,
+  constraint queue_entries_student_phone_fk
+    foreign key (student_id, phone)
+    references public.students (id, phone) on update cascade,
+  constraint queue_entries_reserved_bin_fk
+    foreign key (reserved_bin_id, session_id)
+    references public.bins (id, session_id)
 );
 
 -- One active queue entry per normalized phone per session. Active = the
@@ -163,12 +220,18 @@ create index queue_entries_session_status_idx
 create table public.reservations (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.sessions (id) on delete cascade,
-  queue_entry_id uuid not null references public.queue_entries (id) on delete cascade,
-  bin_id uuid not null references public.bins (id) on delete cascade,
+  queue_entry_id uuid not null,
+  bin_id uuid not null,
   status public.reservation_status not null default 'ACTIVE',
   reserved_at timestamptz not null default now(),
   expires_at timestamptz not null,
-  ended_at timestamptz
+  ended_at timestamptz,
+  constraint reservations_queue_entry_fk
+    foreign key (queue_entry_id, session_id)
+    references public.queue_entries (id, session_id) on delete cascade,
+  constraint reservations_bin_fk
+    foreign key (bin_id, session_id)
+    references public.bins (id, session_id) on delete cascade
 );
 
 -- At most one ACTIVE reservation per bin, and at most one per queue entry.
@@ -192,26 +255,53 @@ create index reservations_session_status_idx
 create table public.rentals (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.sessions (id) on delete cascade,
-  bin_id uuid not null references public.bins (id) on delete cascade,
-  student_id uuid not null references public.students (id) on delete cascade,
-  queue_entry_id uuid not null references public.queue_entries (id) on delete cascade,
+  bin_id uuid not null,
+  student_id uuid not null,
+  queue_entry_id uuid not null,
   status public.rental_status not null default 'OUT',
   checked_out_at timestamptz not null default now(),
   due_at timestamptz not null,
   returned_at timestamptz,
   was_late boolean not null default false,
-  panthercard_collected_at timestamptz,
+  -- Every rental exists because staff collected the card at checkout.
+  panthercard_collected_at timestamptz not null,
   panthercard_returned_at timestamptz,
   checkout_staff_label text not null,
   return_staff_label text,
-  -- Idempotency keys make checkout/return safe to retry (see docs/DATABASE.md).
+  -- Idempotency keys make checkout/return safe to retry. Each is bound to a
+  -- request fingerprint (session + the arguments that identify the request) so
+  -- a replayed key can only ever return the result of the *same* logical
+  -- request — never another session's or another bin's rental.
   checkout_idempotency_key text not null,
+  checkout_request_fingerprint text not null,
   return_idempotency_key text,
+  return_request_fingerprint text,
+  constraint rentals_checkout_idem_key_present
+    check (btrim(checkout_idempotency_key) <> ''),
   constraint rentals_returned_has_return_ts
     check (status <> 'RETURNED' or returned_at is not null),
   -- A normally completed return must record PantherCard return.
   constraint rentals_returned_has_card
-    check (status <> 'RETURNED' or panthercard_returned_at is not null)
+    check (status <> 'RETURNED' or panthercard_returned_at is not null),
+  -- A completed return must remain recognizable on retry.
+  constraint rentals_returned_has_idem_key
+    check (
+      status <> 'RETURNED'
+      or (
+        return_idempotency_key is not null
+        and btrim(return_idempotency_key) <> ''
+        and return_request_fingerprint is not null
+      )
+    ),
+  constraint rentals_bin_fk
+    foreign key (bin_id, session_id)
+    references public.bins (id, session_id) on delete cascade,
+  constraint rentals_student_fk
+    foreign key (student_id, session_id)
+    references public.students (id, session_id) on delete cascade,
+  constraint rentals_queue_entry_fk
+    foreign key (queue_entry_id, session_id)
+    references public.queue_entries (id, session_id) on delete cascade
 );
 
 -- At most one OUT rental per bin.
@@ -219,12 +309,18 @@ create unique index rentals_one_out_per_bin_uidx
   on public.rentals (bin_id)
   where status = 'OUT';
 
+-- Idempotency keys are globally unique per operation. A key reused with a
+-- different request fingerprint is an application error, and the queue engine
+-- raises IDEMPOTENCY_CONFLICT rather than replaying an unrelated result.
 create unique index rentals_checkout_idem_uidx
   on public.rentals (checkout_idempotency_key);
 
 create unique index rentals_return_idem_uidx
   on public.rentals (return_idempotency_key)
   where return_idempotency_key is not null;
+
+alter table public.rentals
+  add constraint rentals_id_session_uniq unique (id, session_id);
 
 create index rentals_session_status_idx
   on public.rentals (session_id, status);
@@ -241,8 +337,8 @@ create index rentals_due_idx
 create table public.notification_outbox (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references public.sessions (id) on delete cascade,
-  student_id uuid not null references public.students (id) on delete cascade,
-  rental_id uuid references public.rentals (id) on delete set null,
+  student_id uuid not null,
+  rental_id uuid,
   type public.notification_type not null,
   body text not null,
   status public.notification_status not null default 'PENDING',
@@ -251,7 +347,13 @@ create table public.notification_outbox (
   attempts integer not null default 0,
   created_at timestamptz not null default now(),
   sent_at timestamptz,
-  last_error text
+  last_error text,
+  constraint notification_outbox_student_fk
+    foreign key (student_id, session_id)
+    references public.students (id, session_id) on delete cascade,
+  constraint notification_outbox_rental_fk
+    foreign key (rental_id, session_id)
+    references public.rentals (id, session_id) on delete cascade
 );
 
 create index notification_outbox_status_idx

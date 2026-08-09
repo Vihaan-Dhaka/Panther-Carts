@@ -343,6 +343,379 @@ describe("checkout / return / expiration", () => {
   });
 });
 
+describe("idempotency keys are bound to the request (review finding 1/2)", () => {
+  async function checkedOutSession() {
+    const s = await createSession(db);
+    await addBins(db, s, ["1", "2"]);
+    const a = await joinQueue(db, s);
+    const ready = await getReadyDetails(db, a.queueEntryId);
+    return { s, a, ready: ready! };
+  }
+
+  it("rejects a checkout key reused in a different session", async () => {
+    const first = await checkedOutSession();
+    const second = await checkedOutSession();
+    const key = randomUUID();
+    await checkout(db, {
+      sessionId: first.s,
+      pickupCode: first.ready.pickup_code,
+      binNumber: first.ready.bin_number,
+      idempotencyKey: key,
+    });
+    await expect(
+      checkout(db, {
+        sessionId: second.s,
+        pickupCode: second.ready.pickup_code,
+        binNumber: second.ready.bin_number,
+        idempotencyKey: key,
+      }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+    // Session two must NOT have received session one's rental.
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.rentals where session_id=$1`,
+        [second.s],
+      ),
+    ).toBe(0);
+    expect((await getEntry(db, second.a.queueEntryId)).status).toBe("READY");
+  });
+
+  it("rejects a checkout key reused with a different bin, and replays an identical request", async () => {
+    const { s, ready } = await checkedOutSession();
+    const key = randomUUID();
+    const original = (await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: ready.bin_number,
+      idempotencyKey: key,
+    })) as { rental: { id: string } };
+
+    await expect(
+      checkout(db, {
+        sessionId: s,
+        pickupCode: ready.pickup_code,
+        binNumber: ready.bin_number === "1" ? "2" : "1",
+        idempotencyKey: key,
+      }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+
+    // The identical request still replays safely.
+    const replay = (await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: ready.bin_number,
+      idempotencyKey: key,
+    })) as { rental: { id: string }; idempotent_replay: boolean };
+    expect(replay.idempotent_replay).toBe(true);
+    expect(replay.rental.id).toBe(original.rental.id);
+  });
+
+  it("rejects a return key reused for a different bin and leaves that bin OUT", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1", "2"]);
+    const a = await joinQueue(db, s);
+    const b = await joinQueue(db, s);
+    const ra = (await getReadyDetails(db, a.queueEntryId))!;
+    const rb = (await getReadyDetails(db, b.queueEntryId))!;
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ra.pickup_code,
+      binNumber: ra.bin_number,
+      idempotencyKey: randomUUID(),
+    });
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: rb.pickup_code,
+      binNumber: rb.bin_number,
+      idempotencyKey: randomUUID(),
+    });
+
+    const key = randomUUID();
+    await returnRental(db, {
+      sessionId: s,
+      binNumber: ra.bin_number,
+      idempotencyKey: key,
+    });
+    await expect(
+      returnRental(db, {
+        sessionId: s,
+        binNumber: rb.bin_number,
+        idempotencyKey: key,
+      }),
+    ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+
+    // The second bin must remain genuinely OUT, not reported as returned.
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.rentals r join public.bins bn on bn.id=r.bin_id
+          where r.session_id=$1 and bn.bin_number=$2 and r.status='OUT'`,
+        [s, rb.bin_number],
+      ),
+    ).toBe(1);
+  });
+
+  it("rejects NULL and blank idempotency keys on checkout and return", async () => {
+    const { s, ready } = await checkedOutSession();
+    for (const key of [null, "   "]) {
+      await expect(
+        checkout(db, {
+          sessionId: s,
+          pickupCode: ready.pickup_code,
+          binNumber: ready.bin_number,
+          idempotencyKey: key,
+        }),
+      ).rejects.toThrow(/IDEMPOTENCY_KEY_REQUIRED/);
+    }
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.rentals where session_id=$1`,
+        [s],
+      ),
+    ).toBe(0);
+
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: ready.bin_number,
+      idempotencyKey: randomUUID(),
+    });
+    for (const key of [null, "   "]) {
+      await expect(
+        returnRental(db, {
+          sessionId: s,
+          binNumber: ready.bin_number,
+          idempotencyKey: key,
+        }),
+      ).rejects.toThrow(/IDEMPOTENCY_KEY_REQUIRED/);
+    }
+    // Nothing moved: rental still OUT, bin still OUT, entry still CHECKED_OUT.
+    const state = await db.query<{
+      rs: string;
+      bs: string;
+      qs: string;
+    }>(
+      `select r.status rs, bn.status bs, qe.status qs
+         from public.rentals r
+         join public.bins bn on bn.id = r.bin_id
+         join public.queue_entries qe on qe.id = r.queue_entry_id
+        where r.session_id = $1`,
+      [s],
+    );
+    expect(state.rows[0]).toMatchObject({
+      rs: "OUT",
+      bs: "OUT",
+      qs: "CHECKED_OUT",
+    });
+  });
+});
+
+describe("PantherCard confirmation is NULL-safe (review finding 3)", () => {
+  it("rejects NULL and FALSE confirmation on checkout without side effects", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+
+    for (const confirmation of [null, false]) {
+      await expect(
+        checkout(db, {
+          sessionId: s,
+          pickupCode: ready.pickup_code,
+          binNumber: "1",
+          panthercardCollected: confirmation,
+          idempotencyKey: randomUUID(),
+        }),
+      ).rejects.toThrow(/PANTHERCARD_REQUIRED/);
+    }
+
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.rentals where session_id=$1`,
+        [s],
+      ),
+    ).toBe(0);
+    // Bin still reserved, entry still READY, reservation still ACTIVE.
+    expect((await getEntry(db, a.queueEntryId)).status).toBe("READY");
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.bins where session_id=$1 and status='RESERVED'`,
+        [s],
+      ),
+    ).toBe(1);
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.reservations where session_id=$1 and status='ACTIVE'`,
+        [s],
+      ),
+    ).toBe(1);
+  });
+
+  it("rejects NULL and FALSE confirmation on return without side effects", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: "1",
+      idempotencyKey: randomUUID(),
+    });
+
+    for (const confirmation of [null, false]) {
+      await expect(
+        returnRental(db, {
+          sessionId: s,
+          binNumber: "1",
+          panthercardReturned: confirmation,
+          idempotencyKey: randomUUID(),
+        }),
+      ).rejects.toThrow(/PANTHERCARD_REQUIRED/);
+    }
+
+    const state = await db.query<{ rs: string; bs: string; qs: string }>(
+      `select r.status rs, bn.status bs, qe.status qs
+         from public.rentals r
+         join public.bins bn on bn.id = r.bin_id
+         join public.queue_entries qe on qe.id = r.queue_entry_id
+        where r.session_id = $1`,
+      [s],
+    );
+    expect(state.rows[0]).toMatchObject({
+      rs: "OUT",
+      bs: "OUT",
+      qs: "CHECKED_OUT",
+    });
+  });
+});
+
+describe("session-consistency and phone invariants (review findings 6/7)", () => {
+  it("refuses to store an unnormalized phone number", async () => {
+    const s = await createSession(db);
+    await expect(
+      db.query(
+        `insert into public.students (session_id, full_name, panther_id, email, phone)
+         values ($1, 'X', '900', 'x@example.edu', '(404) 555-0123')`,
+        [s],
+      ),
+    ).rejects.toThrow(/students_phone_normalized|violates check/i);
+  });
+
+  it("treats formatted and normalized forms of one number as the same student", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    await joinQueue(db, s, { phone: "(404) 555-7777" });
+    await expect(joinQueue(db, s, { phone: "+14045557777" })).rejects.toThrow(
+      /DUPLICATE_ACTIVE_ENTRY/,
+    );
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.queue_entries
+          where session_id=$1 and status in ('WAITING','READY','CHECKED_OUT')`,
+        [s],
+      ),
+    ).toBe(1);
+  });
+
+  it("rejects a queue entry that references another session's student", async () => {
+    const owner = await createSession(db);
+    const other = await createSession(db);
+    const student = await db.query<{ id: string }>(
+      `insert into public.students (session_id, full_name, panther_id, email, phone)
+       values ($1, 'Y', '901', 'y@example.edu', '+15550001234') returning id`,
+      [owner],
+    );
+    await expect(
+      db.query(
+        `insert into public.queue_entries (session_id, student_id, phone, status, queue_rank)
+         values ($1, $2, '+15550001234', 'WAITING', 1)`,
+        [other, student.rows[0].id],
+      ),
+    ).rejects.toThrow(/foreign key/i);
+  });
+
+  it("rejects a reservation that mixes sessions", async () => {
+    // The owner session has no bins, so the entry stays WAITING with no active
+    // reservation — isolating the composite foreign key from the
+    // one-active-reservation-per-entry index.
+    const owner = await createSession(db);
+    const other = await createSession(db);
+    await addBins(db, other, ["1"]);
+    const a = await joinQueue(db, owner);
+    expect(a.status).toBe("WAITING");
+    const otherBin = await db.query<{ id: string }>(
+      `select id from public.bins where session_id = $1`,
+      [other],
+    );
+    await expect(
+      db.query(
+        `insert into public.reservations (session_id, queue_entry_id, bin_id, expires_at)
+         values ($1, $2, $3, now() + interval '10 minutes')`,
+        [owner, a.queueEntryId, otherBin.rows[0].id],
+      ),
+    ).rejects.toThrow(/foreign key/i);
+  });
+});
+
+describe("outbox deduplication actually deduplicates (review finding 8)", () => {
+  it("keeps exactly one row when the same dedupe key is inserted twice", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const student = await db.query<{ student_id: string }>(
+      `select student_id from public.queue_entries where id = $1`,
+      [a.queueEntryId],
+    );
+    const studentId = student.rows[0].student_id;
+    const key = `TEST-DEDUPE:${randomUUID()}`;
+
+    const insertOnce = () =>
+      db.query(
+        `insert into public.notification_outbox (session_id, student_id, type, body, dedupe_key)
+         values ($1, $2, 'MANUAL', 'hello', $3)
+         on conflict (dedupe_key) do nothing`,
+        [s, studentId, key],
+      );
+
+    await insertOnce();
+    await insertOnce(); // second attempt is a genuine duplicate
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.notification_outbox where dedupe_key=$1`,
+        [key],
+      ),
+    ).toBe(1);
+  });
+
+  it("rejects a duplicate dedupe key when ON CONFLICT is not used", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const student = await db.query<{ student_id: string }>(
+      `select student_id from public.queue_entries where id = $1`,
+      [a.queueEntryId],
+    );
+    const key = `TEST-UNIQUE:${randomUUID()}`;
+    const raw = () =>
+      db.query(
+        `insert into public.notification_outbox (session_id, student_id, type, body, dedupe_key)
+         values ($1, $2, 'MANUAL', 'hello', $3)`,
+        [s, student.rows[0].student_id, key],
+      );
+    await raw();
+    // Proves the unique constraint (not just the absence of a second attempt).
+    await expect(raw()).rejects.toThrow(/duplicate key|unique/i);
+  });
+});
+
 describe("duplicate-prevention guards (serialized)", () => {
   // PGlite is single-connection, so these run the two operations sequentially.
   // The session advisory lock serializes real concurrent calls into exactly
@@ -553,7 +926,33 @@ describe("estimated wait", () => {
       [s],
     );
     expect(res.rows[0].f1).toBe(0);
-    expect(res.rows[0].f2).toBeGreaterThan(0);
+    expect(res.rows[0].f2).toBe(60);
+  });
+
+  it("does not let a long-overdue rental erase later cycles", async () => {
+    // Regression for the SQL side of review finding 5: with one rental 120
+    // minutes overdue and a 60-minute duration, positions 1-3 previously all
+    // returned 0. They must now return 0, 60, 120.
+    const s = await createSession(db, { rentalDurationMinutes: 60 });
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: "1",
+      idempotencyKey: randomUUID(),
+    });
+    await forceOverdue(db, s, "1", 120);
+    const res = await db.query<{ f1: number; f2: number; f3: number }>(
+      `select public.estimated_wait_minutes($1,1) f1,
+              public.estimated_wait_minutes($1,2) f2,
+              public.estimated_wait_minutes($1,3) f3`,
+      [s],
+    );
+    expect(res.rows[0].f1).toBe(0);
+    expect(res.rows[0].f2).toBe(60);
+    expect(res.rows[0].f3).toBe(120);
   });
 
   it("returns NULL when no active rental exists", async () => {

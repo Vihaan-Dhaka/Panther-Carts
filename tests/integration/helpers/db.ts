@@ -25,6 +25,20 @@ export const DATABASE_URL =
 
 export const hasDatabase = DATABASE_URL.length > 0;
 
+/**
+ * Set REQUIRE_DB=1 to make the database suites mandatory: without a connection
+ * string they fail loudly instead of skipping. CI for Ticket 1 should set this
+ * so real-PostgreSQL verification can never silently pass by being skipped.
+ */
+export const requireDatabase = process.env.REQUIRE_DB === "1";
+
+if (requireDatabase && !hasDatabase) {
+  throw new Error(
+    "REQUIRE_DB=1 but no DATABASE_URL/SUPABASE_DB_URL is set — real-PostgreSQL " +
+      "tests cannot run. Start the stack (npx supabase start) and export the URL.",
+  );
+}
+
 /** describe() that skips cleanly when no database is configured. */
 export const describeDb: typeof describe.skip = hasDatabase
   ? describe
@@ -199,9 +213,11 @@ export async function checkout(
     sessionId: string;
     pickupCode: string;
     binNumber: string;
-    panthercardCollected?: boolean;
+    // `null` is representable so tests can prove a missing confirmation or
+    // missing idempotency key is rejected rather than assumed.
+    panthercardCollected?: boolean | null;
     staffLabel?: string;
-    idempotencyKey: string;
+    idempotencyKey: string | null;
   },
 ) {
   const res = await client.query(
@@ -210,7 +226,9 @@ export async function checkout(
       args.sessionId,
       args.pickupCode,
       args.binNumber,
-      args.panthercardCollected ?? true,
+      args.panthercardCollected === undefined
+        ? true
+        : args.panthercardCollected,
       args.staffLabel ?? "Staff A",
       args.idempotencyKey,
     ],
@@ -223,9 +241,9 @@ export async function returnRental(
   args: {
     sessionId: string;
     binNumber: string;
-    panthercardReturned?: boolean;
+    panthercardReturned?: boolean | null;
     staffLabel?: string;
-    idempotencyKey: string;
+    idempotencyKey: string | null;
   },
 ) {
   const res = await client.query(
@@ -233,7 +251,7 @@ export async function returnRental(
     [
       args.sessionId,
       args.binNumber,
-      args.panthercardReturned ?? true,
+      args.panthercardReturned === undefined ? true : args.panthercardReturned,
       args.staffLabel ?? "Staff B",
       args.idempotencyKey,
     ],

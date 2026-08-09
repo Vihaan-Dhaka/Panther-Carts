@@ -162,8 +162,10 @@ export async function checkout(
     sessionId: string;
     pickupCode: string;
     binNumber: string;
-    panthercardCollected?: boolean;
-    idempotencyKey: string;
+    // `null` is deliberately representable so tests can prove a missing
+    // confirmation / missing idempotency key is rejected rather than assumed.
+    panthercardCollected?: boolean | null;
+    idempotencyKey: string | null;
   },
 ) {
   const res = await db.query<{ r: Record<string, unknown> }>(
@@ -172,7 +174,9 @@ export async function checkout(
       args.sessionId,
       args.pickupCode,
       args.binNumber,
-      args.panthercardCollected ?? true,
+      args.panthercardCollected === undefined
+        ? true
+        : args.panthercardCollected,
       "Staff A",
       args.idempotencyKey,
     ],
@@ -185,8 +189,8 @@ export async function returnRental(
   args: {
     sessionId: string;
     binNumber: string;
-    panthercardReturned?: boolean;
-    idempotencyKey: string;
+    panthercardReturned?: boolean | null;
+    idempotencyKey: string | null;
   },
 ) {
   const res = await db.query<{ r: Record<string, unknown> }>(
@@ -194,7 +198,7 @@ export async function returnRental(
     [
       args.sessionId,
       args.binNumber,
-      args.panthercardReturned ?? true,
+      args.panthercardReturned === undefined ? true : args.panthercardReturned,
       "Staff B",
       args.idempotencyKey,
     ],

@@ -29,34 +29,8 @@
 -- Helpers
 -- ===========================================================================
 
--- Normalize a phone number to an E.164-ish string. US-centric by documented
--- assumption: a bare 10-digit number gets +1. Kept in sync with the TypeScript
--- mirror in src/lib/validation/phone.ts.
-create or replace function public.normalize_phone(p_phone text)
-returns text
-language plpgsql
-immutable
-set search_path = ''
-as $$
-declare
-  v_digits text;
-begin
-  if p_phone is null then
-    return null;
-  end if;
-  v_digits := regexp_replace(p_phone, '[^0-9]', '', 'g');
-  if v_digits = '' then
-    return '';
-  end if;
-  if char_length(v_digits) = 10 then
-    return '+1' || v_digits;
-  elsif char_length(v_digits) = 11 and left(v_digits, 1) = '1' then
-    return '+' || v_digits;
-  else
-    return '+' || v_digits;
-  end if;
-end;
-$$;
+-- public.normalize_phone is defined in the schema migration because check
+-- constraints on students/queue_entries depend on it.
 
 -- Transaction-scoped, session-level advisory lock. Re-entrant and released at
 -- commit. This is the single serialization point for a session's mutations.
@@ -151,7 +125,6 @@ declare
   v_cycle integer;
   v_index integer;   -- 0-based
   v_due timestamptz;
-  v_est timestamptz;
   v_minutes numeric;
 begin
   if p_position is null or p_position < 1 then
@@ -182,11 +155,14 @@ begin
   offset v_index
   limit 1;
 
-  v_est := v_due + make_interval(mins => v_cycle * v_rental_minutes);
-  v_minutes := ceil(extract(epoch from (v_est - now())) / 60.0);
-  if v_minutes < 0 then
-    v_minutes := 0;  -- overdue rentals contribute zero remaining minutes this cycle
-  end if;
+  -- Clamp the CURRENT cycle's remaining time to zero first, then add the whole
+  -- rental-duration cycles that must still elapse. An overdue rental therefore
+  -- contributes zero remaining minutes for its current cycle without also
+  -- erasing the later cycles a student further back still has to wait through.
+  -- (Adding cycles to a historical due timestamp and clamping afterwards would
+  -- report 0 for every position behind a long-overdue rental.)
+  v_minutes := greatest(0, ceil(extract(epoch from (v_due - now())) / 60.0))
+    + v_cycle * v_rental_minutes;
   return v_minutes::integer;
 end;
 $$;
@@ -583,18 +559,34 @@ declare
   v_rental public.rentals;
   v_rental_minutes integer;
   v_swapped boolean := false;
+  v_fingerprint text;
 begin
   perform public.lock_session(p_session_id);
 
-  -- Idempotent replay.
+  -- An unrecognizable key cannot make a retry safe, so reject it up front.
+  if p_idempotency_key is null or btrim(p_idempotency_key) = '' then
+    raise exception 'PANTHER_CARTS:IDEMPOTENCY_KEY_REQUIRED';
+  end if;
+
+  -- The fingerprint identifies the logical request. Replay is only valid when
+  -- the key AND the request match; a key reused with different arguments (or
+  -- in a different session) is a conflict, never a replay.
+  v_fingerprint := p_session_id::text || '|' || coalesce(p_pickup_code, '')
+    || '|' || coalesce(p_bin_number, '');
+
   select * into v_existing
   from public.rentals
   where checkout_idempotency_key = p_idempotency_key;
   if v_existing.id is not null then
+    if v_existing.checkout_request_fingerprint is distinct from v_fingerprint then
+      raise exception 'PANTHER_CARTS:IDEMPOTENCY_CONFLICT';
+    end if;
     return jsonb_build_object('rental', to_jsonb(v_existing), 'idempotent_replay', true);
   end if;
 
-  if not p_panthercard_collected then
+  -- `is distinct from true` so a NULL confirmation is rejected: plain
+  -- `not NULL` evaluates to NULL and would silently fall through.
+  if p_panthercard_collected is distinct from true then
     raise exception 'PANTHER_CARTS:PANTHERCARD_REQUIRED';
   end if;
 
@@ -659,12 +651,12 @@ begin
   insert into public.rentals (
     session_id, bin_id, student_id, queue_entry_id, status,
     checked_out_at, due_at, panthercard_collected_at,
-    checkout_staff_label, checkout_idempotency_key
+    checkout_staff_label, checkout_idempotency_key, checkout_request_fingerprint
   )
   values (
     p_session_id, v_selected_bin.id, v_entry.student_id, v_entry.id, 'OUT',
     now(), now() + make_interval(mins => v_rental_minutes), now(),
-    p_staff_label, p_idempotency_key
+    p_staff_label, p_idempotency_key, v_fingerprint
   )
   returning * into v_rental;
 
@@ -697,14 +689,25 @@ declare
   v_bin public.bins;
   v_rental public.rentals;
   v_new_res public.reservations;
+  v_fingerprint text;
 begin
   perform public.lock_session(p_session_id);
 
-  -- Idempotent replay.
+  -- A return that cannot be recognized on retry is not idempotent, so a
+  -- missing/blank key is rejected before any state changes.
+  if p_idempotency_key is null or btrim(p_idempotency_key) = '' then
+    raise exception 'PANTHER_CARTS:IDEMPOTENCY_KEY_REQUIRED';
+  end if;
+
+  v_fingerprint := p_session_id::text || '|' || coalesce(p_bin_number, '');
+
   select * into v_existing
   from public.rentals
   where return_idempotency_key = p_idempotency_key;
   if v_existing.id is not null then
+    if v_existing.return_request_fingerprint is distinct from v_fingerprint then
+      raise exception 'PANTHER_CARTS:IDEMPOTENCY_CONFLICT';
+    end if;
     return jsonb_build_object(
       'rental', to_jsonb(v_existing),
       'reservation', null,
@@ -728,7 +731,8 @@ begin
     raise exception 'PANTHER_CARTS:NO_ACTIVE_RENTAL';
   end if;
 
-  if not p_panthercard_returned then
+  -- NULL-safe: a missing confirmation must not be treated as confirmation.
+  if p_panthercard_returned is distinct from true then
     raise exception 'PANTHER_CARTS:PANTHERCARD_REQUIRED';
   end if;
 
@@ -738,7 +742,8 @@ begin
       was_late = (now() > due_at),
       panthercard_returned_at = now(),
       return_staff_label = p_staff_label,
-      return_idempotency_key = p_idempotency_key
+      return_idempotency_key = p_idempotency_key,
+      return_request_fingerprint = v_fingerprint
   where id = v_rental.id
   returning * into v_rental;
 

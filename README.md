@@ -57,3 +57,7 @@ npx supabase start
 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
   npm run test:integration
 ```
+
+The PGlite suites always run (they rebuild the schema from the migrations
+in-process). The multi-connection concurrency suites need a real database; set
+`REQUIRE_DB=1` to make them mandatory so they cannot silently skip in CI.

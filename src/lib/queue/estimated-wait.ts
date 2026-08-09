@@ -13,13 +13,18 @@
  *
  *   cycle = floor((p - 1) / n)
  *   index = (p - 1) mod n
- *   estimated_available_at = sorted_due_times[index] + cycle * rental_duration
+ *   minutes = max(0, ceil((sorted_due_times[index] - now) / 60s))
+ *             + cycle * rental_duration
  *
- * Estimated minutes are the non-negative ceiling of
- * (estimated_available_at - now). An overdue rental therefore contributes zero
- * remaining minutes during its current cycle. If there are no active rentals,
- * the estimate is unavailable — we return a typed result rather than inventing
- * a time.
+ * The current cycle's remaining time is clamped to zero *before* whole
+ * rental-duration cycles are added, so an overdue rental contributes zero
+ * remaining minutes for its own cycle without erasing the later cycles a
+ * student further back must still wait through. (Adding cycles to a historical
+ * due timestamp and clamping afterwards reports 0 for every position behind a
+ * long-overdue rental.)
+ *
+ * If there are no active rentals, the estimate is unavailable — we return a
+ * typed result rather than inventing a time.
  */
 
 export type WaitEstimate =
@@ -57,13 +62,11 @@ export function estimateWaitMinutes(input: EstimateWaitInput): WaitEstimate {
   const cycle = Math.floor((position - 1) / n);
   const index = (position - 1) % n;
 
-  const estimatedAvailableAt =
-    sorted[index].getTime() + cycle * rentalDurationMinutes * MS_PER_MINUTE;
-
-  const rawMinutes = Math.ceil(
-    (estimatedAvailableAt - now.getTime()) / MS_PER_MINUTE,
+  const currentCycleMinutes = Math.max(
+    0,
+    Math.ceil((sorted[index].getTime() - now.getTime()) / MS_PER_MINUTE),
   );
-  const minutes = Math.max(0, rawMinutes);
+  const minutes = currentCycleMinutes + cycle * rentalDurationMinutes;
 
   return { available: true, minutes };
 }
