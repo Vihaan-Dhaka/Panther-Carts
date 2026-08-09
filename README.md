@@ -37,3 +37,10 @@ Open [http://localhost:3000](http://localhost:3000).
 | `npm run test:unit`        | Vitest unit tests (`tests/unit`) |
 | `npm run test:integration` | Vitest integration tests         |
 | `npm run test:e2e`         | Playwright end-to-end tests      |
+
+Before running `npm run test:e2e` for the first time, install the browser
+binary Playwright drives:
+
+```bash
+npx playwright install chromium
+```
