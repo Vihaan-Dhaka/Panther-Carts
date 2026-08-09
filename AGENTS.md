@@ -20,9 +20,11 @@ for layer boundaries and `docs/TICKETS.md` for work sequencing.
 
 - **Never put authoritative queue mutations inside React components.**
   Queue ordering, HOLD transfers, reservation assignment, and rental state
-  transitions live in `src/lib/queue/` and are invoked only from server
-  operations (server actions / route handlers). Components call server
-  operations; they never compute or persist queue state.
+  transitions are PostgreSQL functions in `supabase/migrations/`, invoked via
+  Supabase RPC only from server operations (server actions / route handlers);
+  `src/lib/queue/` holds their server-side wrappers and pure helpers (e.g. the
+  estimated-wait mirror in `estimated-wait.ts`). Components call server
+  operations; they never compute or persist queue state. See `docs/DATABASE.md`.
 - Never import `src/lib/supabase/server.ts` or `src/lib/supabase/admin.ts`
   from client components. Both are `server-only`. Browser code uses
   `src/lib/supabase/client.ts` exclusively.

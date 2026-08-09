@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Local PostgreSQL install (scripts/db.mjs). Flat config does not read
+    // .gitignore, and the EDB bundle ships pgAdmin's JavaScript — linting it
+    // produces thousands of irrelevant findings.
+    ".localdb*/**",
   ]),
 ]);
 

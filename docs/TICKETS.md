@@ -3,13 +3,23 @@
 Work proceeds strictly in this order. Read `docs/PRODUCT_SPEC.md` before
 starting any ticket.
 
-## Ticket 1: Database schema and queue engine
+## Ticket 1: Database schema and queue engine — **complete**
 
-Design the Supabase PostgreSQL schema (`supabase/migrations/`) for sessions,
-bins, students, rentals, and the waitlist. Implement the pure queue engine in
-`src/lib/queue/`: position assignment, HOLD transfer semantics, cancellation,
-and the estimated-wait calculation. Full unit-test coverage of the queue
-rules, including every HOLD case in the spec.
+Supabase PostgreSQL schema (`supabase/migrations/`) for sessions, students,
+bins, queue entries, reservations, rentals, the notification outbox, and audit
+events. The authoritative queue engine is implemented as PostgreSQL functions
+invoked via RPC (`join_queue`, `allocate_bins`, `hold_reservation`, `checkout`,
+`return_rental`, `expire_reservations`, plus the `estimated_wait_minutes`
+calculation), each atomic and idempotent and serialized per session by a
+transaction-scoped advisory lock. Reporting views back the admin/staff tables.
+A deterministic estimated-wait mirror and phone/validation helpers live in
+`src/lib/queue/` and `src/lib/validation/` with unit tests; database
+integration and concurrency tests (including every HOLD case) run against a
+local Supabase instance. Full design: `docs/DATABASE.md`.
+
+Deferred to later tickets by design: RLS policies and PII protection
+(Ticket 6), SMS delivery of outbox rows (Ticket 5), and the UI surfaces
+(Tickets 2–4).
 
 ## Ticket 2: Student signup
 
