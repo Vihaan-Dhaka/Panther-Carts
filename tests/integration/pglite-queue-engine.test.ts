@@ -512,6 +512,200 @@ describe("idempotency keys are bound to the request (review finding 1/2)", () =>
   });
 });
 
+describe("idempotent replay returns the complete original response", () => {
+  it("replays the full checkout response including `swapped`", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1", "2"]);
+    const a = await joinQueue(db, s);
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+    // Deliberately take the OTHER bin so the original response has swapped=true.
+    const otherBin = ready.bin_number === "1" ? "2" : "1";
+    const key = randomUUID();
+
+    const original = (await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: otherBin,
+      idempotencyKey: key,
+    })) as Record<string, unknown>;
+    expect(original.swapped).toBe(true);
+    expect(original.idempotent_replay).toBe(false);
+
+    const replay = (await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: otherBin,
+      idempotencyKey: key,
+    })) as Record<string, unknown>;
+
+    expect(replay.idempotent_replay).toBe(true);
+    // Every other field must match the original response exactly.
+    expect({ ...replay, idempotent_replay: false }).toEqual(original);
+  });
+
+  it("replays the reservation the original return created", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const b = await joinQueue(db, s); // waiting: will receive the freed bin
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: "1",
+      idempotencyKey: randomUUID(),
+    });
+
+    const key = randomUUID();
+    const original = (await returnRental(db, {
+      sessionId: s,
+      binNumber: "1",
+      idempotencyKey: key,
+    })) as Record<string, unknown>;
+    // The original call handed the bin to B.
+    expect(original.reservation).not.toBeNull();
+    expect((await getEntry(db, b.queueEntryId)).status).toBe("READY");
+
+    const replay = (await returnRental(db, {
+      sessionId: s,
+      binNumber: "1",
+      idempotencyKey: key,
+    })) as Record<string, unknown>;
+
+    expect(replay.idempotent_replay).toBe(true);
+    // Regression: this used to come back as null, so a retried request told the
+    // caller no reservation was made when one had been.
+    expect(replay.reservation).not.toBeNull();
+    expect({ ...replay, idempotent_replay: false }).toEqual(original);
+  });
+});
+
+describe("join_queue validates format server-side (review finding 3)", () => {
+  it("rejects malformed email addresses via the RPC", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    for (const email of ["x", "no-at-sign.example", "a@b", "a@b."]) {
+      await expect(
+        db.query(
+          `select public.join_queue($1,'Name','900',$2,'+15551110000')`,
+          [s, email],
+        ),
+      ).rejects.toThrow(/INVALID_EMAIL/);
+    }
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.students where session_id=$1`,
+        [s],
+      ),
+    ).toBe(0);
+  });
+
+  it("rejects malformed phone numbers via the RPC", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    for (const phone of ["+1", "1", "555", "", "abc", "+1234567890123456789"]) {
+      await expect(
+        db.query(
+          `select public.join_queue($1,'Name','900','ok@example.edu',$2)`,
+          [s, phone],
+        ),
+      ).rejects.toThrow(/INVALID_PHONE|INVALID_STUDENT_INPUT/);
+    }
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.students where session_id=$1`,
+        [s],
+      ),
+    ).toBe(0);
+  });
+
+  it("refuses to store malformed values even by direct insert", async () => {
+    const s = await createSession(db);
+    await expect(
+      db.query(
+        `insert into public.students (session_id, full_name, panther_id, email, phone)
+         values ($1,'N','900','x','+15551110000')`,
+        [s],
+      ),
+    ).rejects.toThrow(/students_email_valid|violates check/i);
+    await expect(
+      db.query(
+        `insert into public.students (session_id, full_name, panther_id, email, phone)
+         values ($1,'N','900','ok@example.edu','+1')`,
+        [s],
+      ),
+    ).rejects.toThrow(/students_phone_valid|violates check/i);
+  });
+});
+
+describe("admin views expose the required student details (review finding 4)", () => {
+  it("includes email and phone on late and session rental views", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1"]);
+    const a = await joinQueue(db, s);
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: "1",
+      idempotencyKey: randomUUID(),
+    });
+    await forceOverdue(db, s, "1", 30);
+
+    const late = await db.query<{ email: string; phone: string }>(
+      `select email, phone from public.v_all_late_rentals where session_id=$1`,
+      [s],
+    );
+    expect(late.rows[0].email).toMatch(/@/);
+    expect(late.rows[0].phone).toMatch(/^\+/);
+
+    const all = await db.query<{ email: string; phone: string }>(
+      `select email, phone from public.v_session_rentals where session_id=$1`,
+      [s],
+    );
+    expect(all.rows[0].email).toMatch(/@/);
+    expect(all.rows[0].phone).toMatch(/^\+/);
+  });
+
+  it("exposes the current occupant on the inventory view", async () => {
+    const s = await createSession(db);
+    await addBins(db, s, ["1", "2"]);
+    const a = await joinQueue(db, s);
+    const ready = (await getReadyDetails(db, a.queueEntryId))!;
+    await checkout(db, {
+      sessionId: s,
+      pickupCode: ready.pickup_code,
+      binNumber: ready.bin_number,
+      idempotencyKey: randomUUID(),
+    });
+
+    const occupied = await db.query<{
+      current_full_name: string | null;
+      current_panther_id: string | null;
+      current_email: string | null;
+      current_phone: string | null;
+    }>(
+      `select current_full_name, current_panther_id, current_email, current_phone
+         from public.v_inventory where session_id=$1 and bin_number=$2`,
+      [s, ready.bin_number],
+    );
+    expect(occupied.rows[0].current_full_name).toBeTruthy();
+    expect(occupied.rows[0].current_panther_id).toBeTruthy();
+    expect(occupied.rows[0].current_email).toMatch(/@/);
+    expect(occupied.rows[0].current_phone).toMatch(/^\+/);
+
+    // A bin with no active rental reports no occupant.
+    const free = await db.query<{ current_full_name: string | null }>(
+      `select current_full_name from public.v_inventory
+        where session_id=$1 and bin_number<>$2`,
+      [s, ready.bin_number],
+    );
+    expect(free.rows[0].current_full_name).toBeNull();
+  });
+});
+
 describe("PantherCard confirmation is NULL-safe (review finding 3)", () => {
   it("rejects NULL and FALSE confirmation on checkout without side effects", async () => {
     const s = await createSession(db);

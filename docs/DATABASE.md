@@ -122,6 +122,21 @@ rental/reservation impossible.
   rental with `idempotent_replay: true` and performs no new side effects. A key
   reused with different arguments, or in a different session, raises
   `IDEMPOTENCY_CONFLICT` instead of replaying an unrelated result.
+- **The complete original response is stored** (`checkout_response`,
+  `return_response`) and replayed verbatim with `idempotent_replay` flipped to
+  `true`. Replaying the rental row alone is not enough: a return that handed
+  the freed bin to the next student must report that same reservation on retry,
+  and a checkout that swapped bins must still report `swapped: true`. Callers
+  therefore get an identical answer after a network retry, not just an
+  identical database.
+- **Keys are locked as well as looked up.** The session advisory lock cannot
+  serialize two requests carrying the same key against _different_ sessions, so
+  each operation additionally takes
+  `public.lock_idempotency_key('<operation>', key)`. Without it both callers
+  pass the lookup and the loser surfaces a raw
+  `duplicate key ... rentals_checkout_idem_uidx` error instead of a clean
+  `IDEMPOTENCY_CONFLICT`. Lock order is always **session, then key**, so the two
+  lock classes cannot deadlock.
 - **PantherCard confirmation** is checked with `is distinct from true`, so a
   NULL confirmation is rejected. (`not NULL` evaluates to NULL under SQL
   three-valued logic and would silently fall through.)
@@ -187,14 +202,18 @@ All views are `security_invoker` (RLS on base tables is enforced against the
 caller; only the service role reads the data) and use database time for
 "currently late" — never a stored status.
 
-| View                     | Contents                                              |
-| ------------------------ | ----------------------------------------------------- |
-| `v_current_out_rentals`  | Rentals currently OUT, with `is_currently_late`.      |
-| `v_current_late_rentals` | OUT rentals past due right now (`due_at < now()`).    |
-| `v_all_late_rentals`     | Currently late **or** returned late (history).        |
-| `v_inventory`            | Every bin with status and current occupant/late flag. |
-| `v_session_rentals`      | All rentals in a session (full history).              |
-| `v_current_waitlist`     | WAITING entries ordered by rank.                      |
+| View                     | Contents                                                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `v_current_out_rentals`  | Rentals currently OUT, with `is_currently_late`.                                                                  |
+| `v_current_late_rentals` | OUT rentals past due right now (`due_at < now()`).                                                                |
+| `v_all_late_rentals`     | Currently late **or** returned late (history).                                                                    |
+| `v_inventory`            | Every bin with status, late flag, and the current occupant's details (`current_*`; NULL when the bin is not OUT). |
+| `v_session_rentals`      | All rentals in a session (full history).                                                                          |
+| `v_current_waitlist`     | WAITING entries ordered by rank.                                                                                  |
+
+Every rental and waitlist view carries the student details the admin tables
+need — name, Panther ID, **email, and phone** — so the dropdown-selected tables
+in Ticket 4 can show "all relevant student details" without extra joins.
 
 ## Testing strategy
 
@@ -232,9 +251,18 @@ Desktop cannot run without WSL2).
 **The lock proofs are mutation-tested.** Deleting
 `perform public.lock_session(p_session_id);` from `public.checkout` makes
 "blocks checkout on another connection until the lock is released" and "two
-simultaneous checkouts cannot create duplicate rentals" fail. The suite
-therefore detects a removed or inconsistently-keyed advisory lock rather than
-passing because operations happened to run sequentially.
+simultaneous checkouts cannot create duplicate rentals" fail. Deleting
+`perform public.lock_idempotency_key('checkout', ...)` makes "two simultaneous
+checkouts in different sessions with one key give a clean conflict" fail with
+the raw unique-constraint error. The suite therefore detects a removed or
+inconsistently-keyed advisory lock rather than passing because operations
+happened to run sequentially.
+
+Races are forced with a **lock barrier**, not hopeful parallelism: each call is
+parked behind an advisory lock held on a separate connection, and the locks are
+released together so the calls enter the contended region simultaneously.
+Dispatching two promises alone is not sufficient — the first typically
+completes before the second begins, and the race never occurs.
 
 ## Security foundation (and what remains for Ticket 6)
 

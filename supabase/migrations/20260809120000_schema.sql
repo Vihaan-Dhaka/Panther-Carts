@@ -45,6 +45,33 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Format validation
+-- ---------------------------------------------------------------------------
+-- Used by both the check constraints below and the join_queue RPC, so a value
+-- that could never be stored can also never be accepted. Deliberately
+-- conservative: enough to reject 'x' or '+1', not a full RFC 5322 parser.
+create or replace function public.is_valid_email(p_email text)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select p_email is not null
+    and length(p_email) between 3 and 320
+    and p_email ~ '^[^@[:space:]]+@[^@[:space:].]+(\.[^@[:space:].]+)+$';
+$$;
+
+-- Normalized E.164-ish: '+' followed by 10-15 digits (ITU E.164 max).
+create or replace function public.is_valid_phone(p_phone text)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select p_phone is not null and p_phone ~ '^\+[0-9]{10,15}$';
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Enums
 -- ---------------------------------------------------------------------------
 create type public.session_status as enum ('DRAFT', 'ACTIVE', 'CLOSED');
@@ -121,6 +148,11 @@ create table public.students (
   created_at timestamptz not null default now(),
   constraint students_phone_normalized
     check (phone = public.normalize_phone(phone)),
+  -- Normalization alone would still admit '+1'; require a real E.164 shape.
+  constraint students_phone_valid check (public.is_valid_phone(phone)),
+  constraint students_email_valid check (public.is_valid_email(email)),
+  constraint students_full_name_present check (btrim(full_name) <> ''),
+  constraint students_panther_id_present check (btrim(panther_id) <> ''),
   -- Targets for the composite (session-consistent) foreign keys below.
   constraint students_id_session_uniq unique (id, session_id),
   constraint students_id_phone_uniq unique (id, phone)
@@ -179,6 +211,7 @@ create table public.queue_entries (
   ),
   constraint queue_entries_phone_normalized
     check (phone = public.normalize_phone(phone)),
+  constraint queue_entries_phone_valid check (public.is_valid_phone(phone)),
   constraint queue_entries_id_session_uniq unique (id, session_id),
   -- Session-consistent references: an entry cannot borrow a student or a bin
   -- from another session, and its denormalized phone cannot drift from the
@@ -274,8 +307,14 @@ create table public.rentals (
   -- request — never another session's or another bin's rental.
   checkout_idempotency_key text not null,
   checkout_request_fingerprint text not null,
+  -- The complete original response, so a retry returns the same answer the
+  -- caller would have received the first time — not just the same database
+  -- state. Without this a replayed return would report `reservation: null`
+  -- even though the original call handed the bin to the next student.
+  checkout_response jsonb,
   return_idempotency_key text,
   return_request_fingerprint text,
+  return_response jsonb,
   constraint rentals_checkout_idem_key_present
     check (btrim(checkout_idempotency_key) <> ''),
   constraint rentals_returned_has_return_ts

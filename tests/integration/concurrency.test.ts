@@ -385,4 +385,91 @@ describeDb("idempotency is bound to the request", () => {
     expect(await countRentals(second.sessionId)).toBe(0);
     expect((await getEntry(pool, b.queueEntryId)).status).toBe("READY");
   });
+
+  it("two simultaneous checkouts in different sessions with one key give a clean conflict", async () => {
+    // Regression: the session lock cannot serialize these (different sessions),
+    // so both used to pass the key lookup and one surfaced a raw
+    // unique-constraint error instead of IDEMPOTENCY_CONFLICT.
+    const pool = getPool();
+    const first = await createSession(pool);
+    const second = await createSession(pool);
+    await addBins(pool, first.sessionId, ["1"]);
+    await addBins(pool, second.sessionId, ["1"]);
+    const a = await joinQueue(pool, first.sessionId);
+    const b = await joinQueue(pool, second.sessionId);
+    const ra = await getReadyDetails(pool, a.queueEntryId);
+    const rb = await getReadyDetails(pool, b.queueEntryId);
+
+    // Force genuine overlap: park each call behind its OWN session lock, then
+    // release both at once so they enter the key lookup simultaneously. Simply
+    // dispatching two promises is not enough — the first usually finishes
+    // before the second starts, and the race never happens.
+    const sharedKey = randomUUID();
+    const lockA = await holdSessionLock(first.sessionId);
+    const lockB = await holdSessionLock(second.sessionId);
+
+    const callA = checkout(pool, {
+      sessionId: first.sessionId,
+      pickupCode: ra!.pickupCode,
+      binNumber: "1",
+      idempotencyKey: sharedKey,
+    });
+    const callB = checkout(pool, {
+      sessionId: second.sessionId,
+      pickupCode: rb!.pickupCode,
+      binNumber: "1",
+      idempotencyKey: sharedKey,
+    });
+    expect(await isStillPending(callA)).toBe(true);
+    expect(await isStillPending(callB)).toBe(true);
+
+    await Promise.all([lockA.query("commit"), lockB.query("commit")]);
+    lockA.release();
+    lockB.release();
+
+    const results = await Promise.allSettled([callA, callB]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    // The loser must get the domain error, never a raw 23505 unique violation.
+    const reason = String(
+      (rejected[0] as PromiseRejectedResult).reason?.message ?? "",
+    );
+    expect(reason).toMatch(/IDEMPOTENCY_CONFLICT/);
+    expect(reason).not.toMatch(/duplicate key|unique constraint/i);
+
+    // Exactly one rental exists across both sessions.
+    const total =
+      (await countRentals(first.sessionId)) +
+      (await countRentals(second.sessionId));
+    expect(total).toBe(1);
+  });
+
+  it("two simultaneous identical checkouts both return the same complete response", async () => {
+    const pool = getPool();
+    const { sessionId } = await createSession(pool);
+    await addBins(pool, sessionId, ["1"]);
+    const a = await joinQueue(pool, sessionId);
+    const ready = await getReadyDetails(pool, a.queueEntryId);
+    const key = randomUUID();
+
+    const args = {
+      sessionId,
+      pickupCode: ready!.pickupCode,
+      binNumber: "1",
+      idempotencyKey: key,
+    };
+    const [first, second] = await Promise.all([
+      checkout(pool, args),
+      checkout(pool, args),
+    ]);
+
+    // One is the original, one a replay, but the payloads must agree.
+    expect(first.rental.id).toBe(second.rental.id);
+    expect(first.swapped).toBe(second.swapped);
+    expect(await countRentals(sessionId)).toBe(1);
+  });
 });

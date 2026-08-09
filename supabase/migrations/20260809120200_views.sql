@@ -64,6 +64,8 @@ select
   r.student_id,
   s.full_name,
   s.panther_id,
+  s.email,
+  s.phone,
   r.status,
   r.checked_out_at,
   r.due_at,
@@ -86,11 +88,20 @@ select
   b.status,
   b.updated_at,
   r.id as current_rental_id,
+  r.checked_out_at as current_checked_out_at,
   r.due_at as current_due_at,
-  case when r.id is not null then (now() > r.due_at) else false end as is_currently_late
+  case when r.id is not null then (now() > r.due_at) else false end as is_currently_late,
+  -- Current occupant, so the admin inventory table can show the same student
+  -- details as the other views. NULL for AVAILABLE/RESERVED bins.
+  r.student_id as current_student_id,
+  s.full_name as current_full_name,
+  s.panther_id as current_panther_id,
+  s.email as current_email,
+  s.phone as current_phone
 from public.bins b
 left join public.rentals r
-  on r.bin_id = b.id and r.status = 'OUT';
+  on r.bin_id = b.id and r.status = 'OUT'
+left join public.students s on s.id = r.student_id;
 
 -- All rentals in a session (full history).
 create view public.v_session_rentals
@@ -103,6 +114,8 @@ select
   r.student_id,
   s.full_name,
   s.panther_id,
+  s.email,
+  s.phone,
   r.status,
   r.checked_out_at,
   r.due_at,

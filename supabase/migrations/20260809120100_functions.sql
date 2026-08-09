@@ -45,6 +45,32 @@ begin
 end;
 $$;
 
+-- Transaction-scoped advisory lock keyed by operation + idempotency key.
+--
+-- The session lock alone cannot serialize idempotent retries, because the same
+-- key may be submitted against *different* sessions: both callers would hold
+-- different session locks, both would miss the key lookup, and one would then
+-- hit a raw unique-constraint error instead of a clean IDEMPOTENCY_CONFLICT.
+-- Locking on the key itself closes that window.
+--
+-- Lock ordering is always session-then-key across every function, so these two
+-- lock classes cannot deadlock against each other.
+create or replace function public.lock_idempotency_key(
+  p_operation text,
+  p_key text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_operation || ':' || p_key, 0)
+  );
+end;
+$$;
+
 -- Cryptographically-random four-digit pickup code, unique among active READY
 -- entries in the session. gen_random_uuid() is backed by a CSPRNG on
 -- PostgreSQL, so digits derived from its bits are cryptographically random.
@@ -293,12 +319,20 @@ begin
     raise exception 'PANTHER_CARTS:SESSION_NOT_ACTIVE';
   end if;
 
+  -- The RPC is authoritative: it is reachable directly (SMS handlers, retries,
+  -- future server operations), so it validates format itself rather than
+  -- trusting the Zod schema that fronts the web form.
   v_phone := public.normalize_phone(p_phone);
   if coalesce(btrim(p_full_name), '') = ''
      or coalesce(btrim(p_panther_id), '') = ''
-     or coalesce(btrim(p_email), '') = ''
-     or coalesce(v_phone, '') = '' then
+     or coalesce(btrim(p_email), '') = '' then
     raise exception 'PANTHER_CARTS:INVALID_STUDENT_INPUT';
+  end if;
+  if not public.is_valid_email(btrim(p_email)) then
+    raise exception 'PANTHER_CARTS:INVALID_EMAIL';
+  end if;
+  if not public.is_valid_phone(v_phone) then
+    raise exception 'PANTHER_CARTS:INVALID_PHONE';
   end if;
 
   if exists (
@@ -560,6 +594,7 @@ declare
   v_rental_minutes integer;
   v_swapped boolean := false;
   v_fingerprint text;
+  v_response jsonb;
 begin
   perform public.lock_session(p_session_id);
 
@@ -574,6 +609,10 @@ begin
   v_fingerprint := p_session_id::text || '|' || coalesce(p_pickup_code, '')
     || '|' || coalesce(p_bin_number, '');
 
+  -- Serialize on the key itself so two sessions submitting the same key cannot
+  -- both pass the lookup below and race into a raw unique-constraint error.
+  perform public.lock_idempotency_key('checkout', p_idempotency_key);
+
   select * into v_existing
   from public.rentals
   where checkout_idempotency_key = p_idempotency_key;
@@ -581,7 +620,11 @@ begin
     if v_existing.checkout_request_fingerprint is distinct from v_fingerprint then
       raise exception 'PANTHER_CARTS:IDEMPOTENCY_CONFLICT';
     end if;
-    return jsonb_build_object('rental', to_jsonb(v_existing), 'idempotent_replay', true);
+    -- Return the complete original response, not just the rental.
+    return coalesce(
+      v_existing.checkout_response,
+      jsonb_build_object('rental', to_jsonb(v_existing), 'swapped', false)
+    ) || jsonb_build_object('idempotent_replay', true);
   end if;
 
   -- `is distinct from true` so a NULL confirmation is rejected: plain
@@ -665,7 +708,13 @@ begin
     perform public.allocate_bins(p_session_id);
   end if;
 
-  return jsonb_build_object('rental', to_jsonb(v_rental), 'swapped', v_swapped);
+  v_response := jsonb_build_object(
+    'rental', to_jsonb(v_rental),
+    'swapped', v_swapped,
+    'idempotent_replay', false
+  );
+  update public.rentals set checkout_response = v_response where id = v_rental.id;
+  return v_response;
 end;
 $$;
 
@@ -690,6 +739,7 @@ declare
   v_rental public.rentals;
   v_new_res public.reservations;
   v_fingerprint text;
+  v_response jsonb;
 begin
   perform public.lock_session(p_session_id);
 
@@ -701,6 +751,8 @@ begin
 
   v_fingerprint := p_session_id::text || '|' || coalesce(p_bin_number, '');
 
+  perform public.lock_idempotency_key('return', p_idempotency_key);
+
   select * into v_existing
   from public.rentals
   where return_idempotency_key = p_idempotency_key;
@@ -708,11 +760,12 @@ begin
     if v_existing.return_request_fingerprint is distinct from v_fingerprint then
       raise exception 'PANTHER_CARTS:IDEMPOTENCY_CONFLICT';
     end if;
-    return jsonb_build_object(
-      'rental', to_jsonb(v_existing),
-      'reservation', null,
-      'idempotent_replay', true
-    );
+    -- Replay the complete original response, including any reservation the
+    -- first call created when it handed the freed bin to the next student.
+    return coalesce(
+      v_existing.return_response,
+      jsonb_build_object('rental', to_jsonb(v_existing), 'reservation', null)
+    ) || jsonb_build_object('idempotent_replay', true);
   end if;
 
   select * into v_bin
@@ -760,11 +813,14 @@ begin
   from public.reservations
   where bin_id = v_bin.id and status = 'ACTIVE';
 
-  return jsonb_build_object(
+  v_response := jsonb_build_object(
     'rental', to_jsonb(v_rental),
     'reservation',
-      case when v_new_res.id is not null then to_jsonb(v_new_res) else null end
+      case when v_new_res.id is not null then to_jsonb(v_new_res) else null end,
+    'idempotent_replay', false
   );
+  update public.rentals set return_response = v_response where id = v_rental.id;
+  return v_response;
 end;
 $$;
 
