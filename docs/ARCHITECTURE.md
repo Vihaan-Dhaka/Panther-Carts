@@ -27,6 +27,9 @@ queue logic / database operations, with SMS as a server-side effect.
 ## 3. Database operations (Supabase)
 
 - Location: `src/lib/supabase/`, schema in `supabase/migrations/`.
+- The authoritative queue engine lives here as PostgreSQL functions
+  (`supabase/migrations/`, Ticket 1), invoked via Supabase RPC — see layer 4
+  and `docs/DATABASE.md`.
 - Three clients, chosen by trust level:
   - `client.ts` — browser client, anon key, public env vars only.
   - `server.ts` — server client with request cookies; `server-only`.
@@ -41,14 +44,22 @@ queue logic / database operations, with SMS as a server-side effect.
 
 ## 4. Queue logic
 
-- Location: `src/lib/queue/` (Ticket 1).
-- Pure, deterministic functions covering position assignment, HOLD
-  transfer, cancellation, and estimated-wait calculation as specified in
-  `docs/PRODUCT_SPEC.md`. Pure functions take current state and return the
-  next state, making the spec's rules (e.g. the HOLD example: A holds →
-  B gets the reservation, waitlist becomes C, A, D) directly unit-testable.
-- Server operations are the only callers. Estimated wait is informational
-  and never feeds back into queue order.
+- Authoritative logic: PostgreSQL functions in `supabase/migrations/`
+  (Ticket 1), invoked via Supabase RPC. Position assignment, allocation, HOLD
+  transfer, checkout, return, and reservation expiration are atomic,
+  idempotent, and serialized per session by a transaction-scoped advisory
+  lock. This keeps every queue-order and bin-assignment decision inside a
+  single transaction, so it cannot be corrupted by concurrency and cannot be
+  computed from a React component. See `docs/DATABASE.md`.
+- `src/lib/queue/` holds the server-side surface of that engine: the
+  deterministic estimated-wait mirror (`estimated-wait.ts`, unit-tested), the
+  domain error tokens (`errors.ts`), and — in later tickets — thin RPC
+  wrappers called by server operations. It never persists queue state from the
+  browser.
+- Server operations (and SMS handlers) are the only callers. Estimated wait is
+  informational and never feeds back into queue order.
+- Tests: pure mirrors in `tests/unit`; database integration/concurrency
+  coverage in `tests/integration` against a local Supabase instance.
 
 ## 5. SMS
 

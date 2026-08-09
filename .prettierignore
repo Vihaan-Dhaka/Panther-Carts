@@ -7,3 +7,7 @@ test-results
 playwright-report
 package-lock.json
 next-env.d.ts
+
+# No Prettier parser for these — SQL migrations and Supabase TOML config.
+*.sql
+*.toml

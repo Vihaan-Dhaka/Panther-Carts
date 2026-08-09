@@ -12,6 +12,7 @@ PostgreSQL, Zod, Vitest, and Playwright. Vercel-compatible.
 - [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) — authoritative product requirements
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — layer boundaries
 - [`docs/TICKETS.md`](docs/TICKETS.md) — implementation sequence
+- [`docs/DATABASE.md`](docs/DATABASE.md) — schema, queue engine, locking, and estimated-wait design
 
 ## Getting started
 
@@ -43,4 +44,16 @@ binary Playwright drives:
 
 ```bash
 npx playwright install chromium
+```
+
+### Database integration tests
+
+`npm run test:integration` exercises the SQL queue engine against a local
+Supabase database. It requires Docker (for `supabase start`) and a connection
+string; without one, the database suites skip cleanly instead of failing.
+
+```bash
+npx supabase start
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+  npm run test:integration
 ```
