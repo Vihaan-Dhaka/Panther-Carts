@@ -33,6 +33,14 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+# local database overrides (port etc.) — covered by .env* above, listed
+# explicitly so it is obvious this must never be committed
+.env.db.local
+
+# local development database: downloaded PostgreSQL binaries, the cluster data
+# directory, and the server log. Never commit binaries or database contents.
+# Glob covers alternate PANTHER_DB_HOME locations such as .localdb-alt/.
+/.localdb*/
 
 # test artifacts
 /test-results/

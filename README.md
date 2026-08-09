@@ -46,34 +46,32 @@ binary Playwright drives:
 npx playwright install chromium
 ```
 
-### Database integration tests
+### Database tests
 
-`npm run test:integration` exercises the SQL queue engine against a local
-Supabase database. It requires Docker (for `supabase start`) and a connection
-string; without one, the database suites skip cleanly instead of failing.
-
-```bash
-npx supabase start
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-  REQUIRE_DB=1 npm run test:integration
-```
-
-The PGlite suites always run (they rebuild the schema from the migrations
-in-process). The multi-connection concurrency suites need a real database; set
-`REQUIRE_DB=1` to make them mandatory so they cannot silently skip in CI.
-
-**No Docker?** `DATABASE_URL` can point at _any_ PostgreSQL 14+ server — the
-tests only need the migrations applied. Docker Desktop cannot run on Windows
-Home without WSL2, so a standalone server (including the portable
-`postgresql-*-windows-x64-binaries.zip`, which needs no installer or admin)
-works just as well:
+The database suites run against a real PostgreSQL server — **no Docker
+required**. One command sets everything up and runs them:
 
 ```bash
-# one-time: initdb -D <data> -U postgres --auth=trust && pg_ctl -D <data> -o "-p 55432" start
-createdb -h 127.0.0.1 -p 55432 -U postgres panther_test
-for f in supabase/migrations/*.sql; do
-  psql -h 127.0.0.1 -p 55432 -U postgres -d panther_test -v ON_ERROR_STOP=1 -f "$f"
-done
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/panther_test \
-  REQUIRE_DB=1 npm run test:integration
+npm run test:db
 ```
+
+On the first run this downloads a pinned PostgreSQL 16.4 (~320 MB, once) into
+the git-ignored `.localdb/`, creates a cluster, applies the migrations, and runs
+the full integration + concurrency suite with `REQUIRE_DB=1`.
+
+| Script              | Purpose                                        |
+| ------------------- | ---------------------------------------------- |
+| `npm run db:start`  | Start the local server (idempotent)            |
+| `npm run db:stop`   | Clean shutdown                                 |
+| `npm run db:reset`  | Recreate the test database from the migrations |
+| `npm run db:status` | Show server and database state                 |
+| `npm run test:db`   | Start + reset + run the real-PostgreSQL suite  |
+
+The PGlite suites in `npm run test:integration` always run in-process with no
+server. The multi-connection concurrency suites need the real server; setting
+`REQUIRE_DB=1` makes them fail loudly rather than skip, so CI cannot go green
+without them.
+
+Port conflicts, stale PID files, changing the port, and using an existing
+PostgreSQL install are covered in
+[`docs/LOCAL_DATABASE.md`](docs/LOCAL_DATABASE.md).

@@ -11,3 +11,6 @@ next-env.d.ts
 # No Prettier parser for these — SQL migrations and Supabase TOML config.
 *.sql
 *.toml
+
+# Local PostgreSQL install managed by scripts/db.mjs (never committed).
+.localdb*/
