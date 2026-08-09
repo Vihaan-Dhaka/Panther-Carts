@@ -224,6 +224,18 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
   REQUIRE_DB=1 npm run test:integration
 ```
 
+`DATABASE_URL` may point at any PostgreSQL 14+ server with the migrations
+applied — Supabase local is convenient but not required (see the README for a
+Docker-free standalone-server recipe, needed on Windows Home where Docker
+Desktop cannot run without WSL2).
+
+**The lock proofs are mutation-tested.** Deleting
+`perform public.lock_session(p_session_id);` from `public.checkout` makes
+"blocks checkout on another connection until the lock is released" and "two
+simultaneous checkouts cannot create duplicate rentals" fail. The suite
+therefore detects a removed or inconsistently-keyed advisory lock rather than
+passing because operations happened to run sequentially.
+
 ## Security foundation (and what remains for Ticket 6)
 
 - **RLS is enabled on every application table with no policies** → anon /

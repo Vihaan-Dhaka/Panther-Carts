@@ -55,9 +55,25 @@ string; without one, the database suites skip cleanly instead of failing.
 ```bash
 npx supabase start
 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-  npm run test:integration
+  REQUIRE_DB=1 npm run test:integration
 ```
 
 The PGlite suites always run (they rebuild the schema from the migrations
 in-process). The multi-connection concurrency suites need a real database; set
 `REQUIRE_DB=1` to make them mandatory so they cannot silently skip in CI.
+
+**No Docker?** `DATABASE_URL` can point at _any_ PostgreSQL 14+ server — the
+tests only need the migrations applied. Docker Desktop cannot run on Windows
+Home without WSL2, so a standalone server (including the portable
+`postgresql-*-windows-x64-binaries.zip`, which needs no installer or admin)
+works just as well:
+
+```bash
+# one-time: initdb -D <data> -U postgres --auth=trust && pg_ctl -D <data> -o "-p 55432" start
+createdb -h 127.0.0.1 -p 55432 -U postgres panther_test
+for f in supabase/migrations/*.sql; do
+  psql -h 127.0.0.1 -p 55432 -U postgres -d panther_test -v ON_ERROR_STOP=1 -f "$f"
+done
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/panther_test \
+  REQUIRE_DB=1 npm run test:integration
+```
