@@ -21,8 +21,13 @@ const MIGRATIONS_DIR = path.resolve(
 
 export type Db = PGlite;
 
-export async function createMigratedDb(): Promise<Db> {
+export async function createMigratedDb(
+  options: { createServiceRole?: boolean } = {},
+): Promise<Db> {
   const db = new PGlite();
+  if (options.createServiceRole) {
+    await db.exec("create role service_role nologin");
+  }
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith(".sql"))
     .sort();

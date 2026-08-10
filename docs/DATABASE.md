@@ -269,6 +269,10 @@ completes before the second begins, and the race never occurs.
 - **RLS is enabled on every application table with no policies** → anon /
   authenticated are denied by default; only the service-role key (trusted
   server operations) bypasses RLS.
+- **Data API privileges are explicit** → `service_role` receives the table and
+  sequence privileges needed by trusted `supabase-js` operations; `anon` and
+  `authenticated` receive none. This supports Supabase's 2026 opt-in exposure
+  defaults without broadening browser access.
 - **No broad anonymous read/write policies** exist.
 - Every `SECURITY DEFINER` function sets a **fixed empty `search_path`** and
   schema-qualifies all references.
