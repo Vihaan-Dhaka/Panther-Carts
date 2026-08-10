@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# Binary asset types tracked by this repository.
+*.ico binary
