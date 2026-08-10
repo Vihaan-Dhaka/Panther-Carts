@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { joinQueueSchema } from "@/lib/validation/student";
+import {
+  joinQueueRpcResponseSchema,
+  joinQueueSchema,
+  studentSessionCodeSchema,
+} from "@/lib/validation/student";
 
 const valid = {
   fullName: "Jordan Panther",
@@ -35,5 +39,54 @@ describe("joinQueueSchema", () => {
   it("rejects a phone number that cannot be normalized to E.164", () => {
     const result = joinQueueSchema.safeParse({ ...valid, phone: "abc" });
     expect(result.success).toBe(false);
+  });
+
+  it("rejects non-string form fields safely", () => {
+    const result = joinQueueSchema.safeParse({
+      ...valid,
+      fullName: new Blob(["Jordan Panther"]),
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("studentSessionCodeSchema", () => {
+  it("trims a valid code and rejects missing or oversized codes", () => {
+    expect(studentSessionCodeSchema.parse("  fall-session  ")).toBe(
+      "fall-session",
+    );
+    expect(studentSessionCodeSchema.safeParse("").success).toBe(false);
+    expect(studentSessionCodeSchema.safeParse("x".repeat(201)).success).toBe(
+      false,
+    );
+  });
+});
+
+describe("joinQueueRpcResponseSchema", () => {
+  it("requires a four-digit PostgreSQL pickup code for READY", () => {
+    expect(
+      joinQueueRpcResponseSchema.safeParse({
+        queue_entry: { status: "READY", pickup_code: "0427" },
+        position: 0,
+        estimated_wait_minutes: 0,
+      }).success,
+    ).toBe(true);
+    expect(
+      joinQueueRpcResponseSchema.safeParse({
+        queue_entry: { status: "READY", pickup_code: "427" },
+        position: 0,
+        estimated_wait_minutes: 0,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a positive position for WAITING", () => {
+    expect(
+      joinQueueRpcResponseSchema.safeParse({
+        queue_entry: { status: "WAITING", pickup_code: null },
+        position: 0,
+        estimated_wait_minutes: null,
+      }).success,
+    ).toBe(false);
   });
 });

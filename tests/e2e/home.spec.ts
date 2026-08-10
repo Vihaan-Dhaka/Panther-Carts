@@ -11,9 +11,15 @@ test("homepage links to the three interfaces", async ({ page }) => {
   await expect(page.getByRole("link", { name: /Admin/ })).toBeVisible();
 });
 
-test("student placeholder page renders the session code", async ({ page }) => {
+test("student signup route replaces the placeholder safely", async ({
+  page,
+}) => {
   await page.goto("/student/demo-session");
-  await expect(page.getByText("demo-session")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Student signup" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Placeholder/)).toHaveCount(0);
+  await expect(page.getByText("demo-session")).toHaveCount(0);
 });
 
 test("staff placeholder page renders the access code", async ({ page }) => {
