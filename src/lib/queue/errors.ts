@@ -44,3 +44,11 @@ export function parseQueueErrorCode(message: string): QueueErrorCode | null {
   const codes = Object.values(QueueErrorCode) as string[];
   return codes.includes(token) ? (token as QueueErrorCode) : null;
 }
+
+/** Safe server-side representation of an RPC failure. Raw database text stays out. */
+export class QueueOperationError extends Error {
+  constructor(readonly code: QueueErrorCode | null) {
+    super(code ? `Queue operation failed: ${code}` : "Queue operation failed");
+    this.name = "QueueOperationError";
+  }
+}
