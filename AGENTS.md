@@ -18,10 +18,10 @@ document ticket work. Follow the lifecycle in
 starts from an updated `main` on its own branch, and Codex must never work
 directly on `main`.
 
-Before implementation, read the applicable ticket in `docs/TICKETS.md` and the
-relevant sections of the authoritative references:
+Before implementing a product ticket, read `docs/PRODUCT_SPEC.md` in full and
+the applicable ticket in `docs/TICKETS.md`. Also read the relevant sections of
+the supporting authoritative references:
 
-- `docs/PRODUCT_SPEC.md` — product requirements.
 - `docs/ARCHITECTURE.md` — layer boundaries.
 - `docs/DATABASE.md` — data model, invariants, and database testing.
 
@@ -69,6 +69,11 @@ not copy the product specification into this file.
 - `npm run test:unit` — Vitest unit tests (`tests/unit`)
 - `npm run test:integration` — Vitest integration tests (`tests/integration`)
 - `npm run test:e2e` — Playwright (`tests/e2e`)
+
+Before using the local PostgreSQL commands below, read
+[`docs/LOCAL_DATABASE.md`](docs/LOCAL_DATABASE.md) for their download,
+platform, configuration, and safety prerequisites.
+
 - `npm run db:start` — start the local PostgreSQL server
 - `npm run db:stop` — stop the local PostgreSQL server
 - `npm run db:reset` — recreate the local database and apply migrations

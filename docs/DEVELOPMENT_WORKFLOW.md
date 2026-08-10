@@ -12,9 +12,12 @@ independently. The authoritative requirements remain in
 3. Codex implements the ticket and adds and runs the relevant tests.
 4. Codex commits, pushes, and opens a pull request into `main` without merging.
 5. Claude audits the full pull request read-only.
-6. Findings return to the same Codex task.
-7. Codex fixes the findings, retests, commits, and pushes to the same branch.
-8. Claude re-audits the complete updated pull request.
+6. If Claude reports findings, they return to the same Codex task.
+7. Codex fixes the merge-blocking findings and any accepted suggestions,
+   retests, commits, and pushes to the same branch.
+8. Claude re-audits the complete updated pull request. Repeat steps 6–8 until
+   no merge-blocking findings remain. If the first audit is clean, proceed
+   directly to step 9.
 9. The user merges only after Claude approves the ticket for merge.
 10. Only one agent writes code at a time.
 
@@ -41,6 +44,11 @@ from review stay on that same ticket branch and pull request.
 - `npm run test:unit` — unit tests.
 - `npm run test:integration` — integration tests.
 - `npm run test:e2e` — end-to-end tests.
+
+Before using the local PostgreSQL commands below, read
+[`LOCAL_DATABASE.md`](LOCAL_DATABASE.md) for their download, platform,
+configuration, and safety prerequisites.
+
 - `npm run db:start` — start the local PostgreSQL server.
 - `npm run db:stop` — stop the local PostgreSQL server.
 - `npm run db:reset` — recreate the local database and apply migrations.
