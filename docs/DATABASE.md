@@ -10,12 +10,17 @@ Migrations:
 - `20260809120000_schema.sql` — enums, tables, constraints, indexes, RLS.
 - `20260809120100_functions.sql` — helpers + queue-engine RPC functions.
 - `20260809120200_views.sql` — reporting views.
+- `20260810160000_service_role_data_api_grants.sql` — explicit trusted-server
+  Data API privileges without browser-role exposure.
+- `20260811120000_admin_dashboard.sql` — Ticket 4 session lifecycle, bulk-bin,
+  and manual-notification RPC functions.
 
 ## Tables
 
 - **`sessions`** — a staffed rental session. Holds status, public student
-  code, staff access code, rental duration, pickup-window duration, and
-  lifecycle timestamps. Durations are constrained `> 0`.
+  code, staff access code, rental duration, pickup-window duration, lifecycle
+  timestamps, and the optional request key/fingerprint used to make Ticket 4
+  session creation retry-safe. Durations are constrained `> 0`.
 - **`students`** — signup records (name, Panther ID, email, normalized phone)
   scoped to a session. Indexed by session, `(session, phone)`, and
   `(session, panther_id)`.
@@ -145,6 +150,34 @@ rental/reservation impossible.
 - **notification creation**: every insert into `notification_outbox` uses a
   deterministic `dedupe_key` with `on conflict (dedupe_key) do nothing`
   (`INITIAL:<entry>`, `READY:<reservation>`, `HOLD:<reservation>`).
+- **Ticket 4 admin mutations**: `admin_create_session` locks its request key
+  and binds it to a request fingerprint; start, end, and duration updates are
+  state-idempotent; `admin_add_bins` uses the per-session uniqueness constraint
+  and returns added/duplicate number lists; `admin_notify_rental` binds a
+  `MANUAL:<request-key>` outbox intent to exactly one session and active rental.
+  A retry returns the original outbox row instead of enqueueing twice.
+
+## Ticket 4 admin operations
+
+The Admin Dashboard resolves its current session in trusted server code and
+passes that authoritative id to PostgreSQL. The RPCs recheck session and row
+scope under the session advisory lock:
+
+- `admin_create_session` creates a DRAFT with generated student/staff codes.
+- `admin_configure_session` changes positive durations on DRAFT/ACTIVE
+  sessions only.
+- `admin_start_session` performs `DRAFT → ACTIVE`.
+- `admin_end_session` performs `ACTIVE → CLOSED`.
+- `admin_add_bins` atomically inserts a validated canonical number set and
+  safely reports existing numbers.
+- `admin_notify_rental` enqueues a provider-independent `MANUAL` outbox intent
+  for an active rental. PostgreSQL derives the remaining/overdue minutes from
+  database time. Sending that intent remains Ticket 5 work.
+
+All six reporting views are queried with an explicit `session_id` equality
+constraint and paginated with stable ordering. DTO projection removes internal
+session/student identifiers while retaining the student contact details the
+admin tables require.
 
 ## Queue ordering
 
