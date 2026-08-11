@@ -60,6 +60,22 @@ export async function closePool(): Promise<void> {
   }
 }
 
+/** Resolves true when a database promise remains unsettled after `ms`. */
+export async function isStillPending(
+  promise: Promise<unknown>,
+  ms = 700,
+): Promise<boolean> {
+  const marker = Symbol("pending");
+  const result = await Promise.race([
+    promise.then(
+      () => "settled",
+      () => "settled",
+    ),
+    new Promise((resolve) => setTimeout(() => resolve(marker), ms)),
+  ]);
+  return result === marker;
+}
+
 export interface CreatedSession {
   sessionId: string;
   studentCode: string;
