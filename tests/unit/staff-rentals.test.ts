@@ -364,6 +364,66 @@ describe("staff checkout and return database wrappers", () => {
     });
   });
 
+  it("rejects checkout RPC data from a different session", async () => {
+    const { client } = fakeClient(
+      {},
+      {
+        data: {
+          rental: {
+            session_id: "15f7d61c-a959-447c-bb3f-da59561b90a2",
+            bin_id: AVAILABLE_BIN_ID,
+            student_id: STUDENT_ID,
+            status: "OUT",
+            due_at: "2026-08-11T20:00:00+00:00",
+            panthercard_collected_at: "2026-08-11T19:00:00+00:00",
+            checkout_idempotency_key: IDEMPOTENCY_KEY,
+          },
+          swapped: false,
+          idempotent_replay: false,
+        },
+        error: null,
+      },
+    );
+
+    await expect(
+      checkoutRental(client, SESSION_ID, "0427", {
+        binNumber: "2",
+        pantherCardCollected: true,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toEqual(new QueueOperationError(null));
+  });
+
+  it("rejects return RPC data from a different session", async () => {
+    const { client } = fakeClient(
+      {},
+      {
+        data: {
+          rental: {
+            session_id: "15f7d61c-a959-447c-bb3f-da59561b90a2",
+            bin_id: RESERVED_BIN_ID,
+            student_id: STUDENT_ID,
+            status: "RETURNED",
+            was_late: false,
+            panthercard_returned_at: "2026-08-11T19:00:00+00:00",
+            return_idempotency_key: IDEMPOTENCY_KEY,
+          },
+          reservation: null,
+          idempotent_replay: false,
+        },
+        error: null,
+      },
+    );
+
+    await expect(
+      returnRental(client, SESSION_ID, {
+        binNumber: "1",
+        pantherCardReturned: true,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      }),
+    ).rejects.toEqual(new QueueOperationError(null));
+  });
+
   it("maps known RPC errors and rejects malformed RPC responses", async () => {
     const checkoutError = fakeClient(
       {},

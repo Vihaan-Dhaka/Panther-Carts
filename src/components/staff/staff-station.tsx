@@ -101,11 +101,30 @@ function CheckoutConfirmation({
     fieldErrors: {},
     formError: null,
   };
-  const boundAction = action.bind(
-    null,
-    lookupState.values.pickupCode,
-    lookupState.idempotencyKey,
-  );
+  const boundAction = async (
+    previousState: CheckoutConfirmationState,
+    formData: FormData,
+  ): Promise<CheckoutConfirmationState> => {
+    const nextState = await action(
+      lookupState.values.pickupCode,
+      lookupState.idempotencyKey,
+      previousState,
+      formData,
+    );
+    if (
+      nextState.status !== "success" &&
+      nextState.eligibleBinsRefreshAttempted
+    ) {
+      return {
+        ...nextState,
+        eligibleBinsRevision:
+          (previousState.status === "success"
+            ? 0
+            : (previousState.eligibleBinsRevision ?? 0)) + 1,
+      };
+    }
+    return nextState;
+  };
   const [state, formAction, pending] = useActionState(
     boundAction,
     initialState,
@@ -145,7 +164,13 @@ function CheckoutConfirmation({
 
   const binError = state.fieldErrors.binNumber?.[0];
   const cardError = state.fieldErrors.pantherCardCollected?.[0];
-  const eligibleBins = state.eligibleBins ?? lookupState.preview.eligibleBins;
+  const eligibleBins =
+    state.eligibleBins ??
+    (state.eligibleBinsRefreshAttempted
+      ? lookupState.preview.eligibleBins.filter(
+          (bin) => bin.binNumber !== state.values.binNumber,
+        )
+      : lookupState.preview.eligibleBins);
   const selectedBin = eligibleBins.some(
     (bin) => bin.binNumber === state.values.binNumber,
   )
@@ -153,10 +178,10 @@ function CheckoutConfirmation({
     : (eligibleBins.find((bin) => bin.reserved)?.binNumber ??
       eligibleBins[0]?.binNumber ??
       "");
-  const eligibleBinListKey = state.eligibleBins
-    ? eligibleBins
+  const eligibleBinListKey = state.eligibleBinsRevision
+    ? `refresh-${state.eligibleBinsRevision}-${eligibleBins
         .map((bin) => `${bin.binNumber}:${bin.reserved ? "r" : "a"}`)
-        .join("|")
+        .join("|")}`
     : "initial";
 
   return (
@@ -261,7 +286,11 @@ function CheckoutAttempt({
           Enter the code shown by the student.
         </p>
         {error ? (
-          <p id="pickup-code-error" className="mt-2 text-sm text-red-700">
+          <p
+            id="pickup-code-error"
+            role="alert"
+            className="mt-2 text-sm text-red-700"
+          >
             {error}
           </p>
         ) : null}
@@ -442,7 +471,11 @@ function ReturnAttempt({
           Enter the number printed on the returned bin.
         </p>
         {error ? (
-          <p id="return-bin-error" className="mt-2 text-sm text-red-700">
+          <p
+            id="return-bin-error"
+            role="alert"
+            className="mt-2 text-sm text-red-700"
+          >
             {error}
           </p>
         ) : null}

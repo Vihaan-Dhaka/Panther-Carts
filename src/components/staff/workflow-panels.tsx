@@ -44,7 +44,7 @@ export function CheckoutPreviewPanel({
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="mt-1 text-xl font-bold text-slate-950 focus:outline-none"
+          className="mt-1 text-xl font-bold text-slate-950 focus:outline-2 focus:outline-offset-4 focus:outline-indigo-700"
         >
           Confirm the physical handoff
         </h3>
@@ -70,7 +70,7 @@ export function ReturnPreviewPanel({
         <h3
           ref={headingRef}
           tabIndex={-1}
-          className="mt-1 text-xl font-bold text-slate-950 focus:outline-none"
+          className="mt-1 text-xl font-bold text-slate-950 focus:outline-2 focus:outline-offset-4 focus:outline-amber-700"
         >
           Return the physical PantherCard
         </h3>
@@ -114,7 +114,11 @@ export function EligibleBinSelect({
         ))}
       </select>
       {error ? (
-        <p id="checkout-bin-error" className="mt-2 text-sm text-red-700">
+        <p
+          id="checkout-bin-error"
+          role="alert"
+          className="mt-2 text-sm text-red-700"
+        >
           {error}
         </p>
       ) : null}
@@ -159,7 +163,7 @@ export function PantherCardConfirmation({
         </span>
       </label>
       {error ? (
-        <p id={errorId} className="mt-2 text-sm text-red-700">
+        <p id={errorId} role="alert" className="mt-2 text-sm text-red-700">
           {error}
         </p>
       ) : null}
@@ -193,7 +197,7 @@ export function WorkflowSuccess({
       <h3
         ref={headingRef}
         tabIndex={-1}
-        className="mt-2 text-xl font-bold focus:outline-none"
+        className="mt-2 text-xl font-bold focus:outline-2 focus:outline-offset-4 focus:outline-emerald-700"
       >
         Bin {binNumber} {checkout ? "is checked out" : "was returned"}.
       </h3>

@@ -53,6 +53,8 @@ export type CheckoutConfirmationState =
       fieldErrors: FieldErrors<"binNumber" | "pantherCardCollected">;
       formError: string | null;
       eligibleBins?: CheckoutPreview["eligibleBins"];
+      eligibleBinsRefreshAttempted?: boolean;
+      eligibleBinsRevision?: number;
     }
   | {
       status: "success";
@@ -484,9 +486,15 @@ export async function executeCheckout(
           session.id,
           pickupCode.data,
         );
-        return { ...errorState, eligibleBins: refreshed.eligibleBins };
+        return {
+          ...errorState,
+          eligibleBins: refreshed.eligibleBins,
+          eligibleBinsRefreshAttempted: true,
+        };
       } catch {
-        // Keep the authoritative RPC error and let staff restart the lookup.
+        // Still flag the attempt so the client drops the rejected option even
+        // when the refreshed list cannot be loaded.
+        return { ...errorState, eligibleBinsRefreshAttempted: true };
       }
     }
 

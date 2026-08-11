@@ -254,9 +254,13 @@ describe("staff station server operations", () => {
     });
 
     expect(first.status).toBe("success");
-    expect(retry).toMatchObject({
+    expect(retry).toEqual({
       status: "success",
-      result: { idempotentReplay: true },
+      result: {
+        student: { fullName: "Jordan Panther", pantherId: "900123456" },
+        binNumber: "1",
+        idempotentReplay: true,
+      },
     });
     expect(rpc).toHaveBeenCalledTimes(2);
     expect(rpc.mock.calls[0][1].p_idempotency_key).toBe(KEY);
@@ -343,10 +347,35 @@ describe("staff station server operations", () => {
 
     expect(state).toMatchObject({
       status: "error",
+      eligibleBinsRefreshAttempted: true,
       eligibleBins: [
         { binNumber: "1", reserved: true },
         { binNumber: "12", reserved: false },
       ],
+    });
+  });
+
+  it("flags a failed eligible-bin refresh so the client can reset", async () => {
+    const { client } = fakeClient({
+      rpc: {
+        data: null,
+        error: { message: "PANTHER_CARTS:BIN_NOT_USABLE" },
+      },
+    });
+
+    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+      binNumber: "2",
+      pantherCardCollected: "on",
+    });
+
+    expect(state).toEqual({
+      status: "error",
+      values: { binNumber: "2", pantherCardCollected: true },
+      fieldErrors: {
+        binNumber: ["That bin is no longer eligible for checkout"],
+      },
+      formError: null,
+      eligibleBinsRefreshAttempted: true,
     });
   });
 
@@ -430,7 +459,7 @@ describe("staff station server operations", () => {
       pantherCardReturned: "on",
     });
 
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       status: "success",
       result: {
         student: { fullName: "Jordan Panther", pantherId: "900123456" },

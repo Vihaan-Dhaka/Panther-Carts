@@ -34,6 +34,8 @@ describe("staff station UI", () => {
     expect(html).toContain("Jordan Panther");
     expect(html).toContain("900123456");
     expect(html).toContain('tabindex="-1"');
+    expect(html).toContain("focus:outline-2");
+    expect(html).not.toContain("focus:outline-none");
     expect(html).not.toMatch(/private@example|14045550123|internal-student-id/);
   });
 
@@ -48,6 +50,8 @@ describe("staff station UI", () => {
     expect(html).toContain("900123456");
     expect(html).toContain("Bin 014");
     expect(html).toContain('tabindex="-1"');
+    expect(html).toContain("focus:outline-2");
+    expect(html).not.toContain("focus:outline-none");
     expect(html).not.toMatch(/private@example|14045550123|internal-student-id/);
   });
 
@@ -84,6 +88,26 @@ describe("staff station UI", () => {
     },
   );
 
+  it("announces checkout field errors", () => {
+    const binHtml = renderToStaticMarkup(
+      <EligibleBinSelect
+        bins={[{ binNumber: "1", reserved: true }]}
+        defaultValue="1"
+        error="Choose another bin"
+      />,
+    );
+    const cardHtml = renderToStaticMarkup(
+      <PantherCardConfirmation
+        workflow="checkout"
+        defaultChecked={false}
+        error="Confirm the PantherCard"
+      />,
+    );
+
+    expect(binHtml).toMatch(/role="alert"[^>]*>Choose another bin/);
+    expect(cardHtml).toMatch(/role="alert"[^>]*>Confirm the PantherCard/);
+  });
+
   it.each(["checkout", "return"] as const)(
     "shows a clear %s success and safe replay state",
     (kind) => {
@@ -101,6 +125,8 @@ describe("staff station UI", () => {
       );
       expect(html).toContain("safe retry");
       expect(html).toContain('tabindex="-1"');
+      expect(html).toContain("focus:outline-2");
+      expect(html).not.toContain("focus:outline-none");
       expect(html).not.toMatch(
         /private@example|14045550123|internal-student-id/,
       );
