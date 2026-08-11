@@ -32,6 +32,7 @@ async function runAdminAction(
 }
 
 export async function createSessionAction(
+  _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
   return runAdminAction(() =>
@@ -45,6 +46,7 @@ export async function createSessionAction(
 }
 
 export async function configureSessionAction(
+  _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
   return runAdminAction(() =>
@@ -55,15 +57,26 @@ export async function configureSessionAction(
   );
 }
 
-export async function startSessionAction(): Promise<AdminActionResult> {
+export async function startSessionAction(
+  _previousState: AdminActionResult | null,
+  _formData: FormData,
+): Promise<AdminActionResult> {
+  void _previousState;
+  void _formData;
   return runAdminAction(() => executeStartAdminSession(createAdminClient()));
 }
 
-export async function endSessionAction(): Promise<AdminActionResult> {
+export async function endSessionAction(
+  _previousState: AdminActionResult | null,
+  _formData: FormData,
+): Promise<AdminActionResult> {
+  void _previousState;
+  void _formData;
   return runAdminAction(() => executeEndAdminSession(createAdminClient()));
 }
 
 export async function addBinsAction(
+  _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
   return runAdminAction(() =>
@@ -78,6 +91,7 @@ export async function addBinsAction(
 }
 
 export async function notifyRentalAction(
+  _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
   return runAdminAction(() =>
