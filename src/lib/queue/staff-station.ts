@@ -52,16 +52,21 @@ export type CheckoutConfirmationState =
       values: CheckoutConfirmationValues;
       fieldErrors: FieldErrors<"binNumber" | "pantherCardCollected">;
       formError: string | null;
+      eligibleBins?: CheckoutPreview["eligibleBins"];
     }
   | {
       status: "success";
       result: {
-        student: StaffStudent;
+        student: StaffStudent | null;
         binNumber: string;
-        swapped: boolean;
         idempotentReplay: boolean;
       };
     };
+
+type CheckoutConfirmationFormState = Exclude<
+  CheckoutConfirmationState,
+  { status: "success" }
+>;
 
 export type ReturnLookupValues = { binNumber: string };
 export type ReturnLookupState =
@@ -92,9 +97,8 @@ export type ReturnConfirmationState =
   | {
       status: "success";
       result: {
-        student: StaffStudent;
+        student: StaffStudent | null;
         binNumber: string;
-        nextReservationCreated: boolean;
         idempotentReplay: boolean;
       };
     };
@@ -205,11 +209,11 @@ function checkoutLookupError(
 function checkoutConfirmationError(
   values: CheckoutConfirmationValues,
   error: QueueOperationError,
-): CheckoutConfirmationState {
+): CheckoutConfirmationFormState {
   const state = (
     formError: string | null,
     fieldErrors: FieldErrors<"binNumber" | "pantherCardCollected"> = {},
-  ): CheckoutConfirmationState => ({
+  ): CheckoutConfirmationFormState => ({
     status: "error",
     values,
     fieldErrors,
@@ -435,35 +439,58 @@ export async function executeCheckout(
     };
   }
 
+  let session: StaffSession | null = null;
   try {
-    const session = await requireActiveStaffSession(client, staffCodeInput);
+    session = await requireActiveStaffSession(client, staffCodeInput);
     const result = await checkoutRental(
       client,
       session.id,
       pickupCode.data,
       confirmation.data,
     );
-    const student = await getPublicStudentForSession(
-      client,
-      session.id,
-      result.studentId,
-    );
+    let student: StaffStudent | null = null;
+    try {
+      student = await getPublicStudentForSession(
+        client,
+        session.id,
+        result.studentId,
+      );
+    } catch {
+      // The authoritative checkout already committed. A transient display-only
+      // read must not turn that committed mutation into a reported failure.
+    }
     return {
       status: "success",
       result: {
         student,
         binNumber: confirmation.data.binNumber,
-        swapped: result.swapped,
         idempotentReplay: result.idempotentReplay,
       },
     };
   } catch (error) {
-    return checkoutConfirmationError(
-      values,
+    const operationError =
       error instanceof QueueOperationError
         ? error
-        : new QueueOperationError(null),
-    );
+        : new QueueOperationError(null);
+    const errorState = checkoutConfirmationError(values, operationError);
+
+    if (
+      operationError.code === QueueErrorCode.BIN_NOT_USABLE &&
+      session !== null
+    ) {
+      try {
+        const refreshed = await getCheckoutPreview(
+          client,
+          session.id,
+          pickupCode.data,
+        );
+        return { ...errorState, eligibleBins: refreshed.eligibleBins };
+      } catch {
+        // Keep the authoritative RPC error and let staff restart the lookup.
+      }
+    }
+
+    return errorState;
   }
 }
 
@@ -535,17 +562,22 @@ export async function executeReturn(
   try {
     const session = await requireActiveStaffSession(client, staffCodeInput);
     const result = await returnRental(client, session.id, confirmation.data);
-    const student = await getPublicStudentForSession(
-      client,
-      session.id,
-      result.studentId,
-    );
+    let student: StaffStudent | null = null;
+    try {
+      student = await getPublicStudentForSession(
+        client,
+        session.id,
+        result.studentId,
+      );
+    } catch {
+      // The authoritative return already committed. Preserve a truthful
+      // success result even when the optional identity display cannot reload.
+    }
     return {
       status: "success",
       result: {
         student,
         binNumber: confirmation.data.binNumber,
-        nextReservationCreated: result.nextReservationCreated,
         idempotentReplay: result.idempotentReplay,
       },
     };

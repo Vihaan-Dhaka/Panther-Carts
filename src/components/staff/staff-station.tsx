@@ -111,11 +111,27 @@ function CheckoutConfirmation({
     initialState,
   );
   const guardSubmission = useDuplicateSubmissionGuard(pending);
+  const previewHeadingRef = useRef<HTMLHeadingElement>(null);
+  const successHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    previewHeadingRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (state.status === "success") {
+      successHeadingRef.current?.focus();
+    }
+  }, [state.status]);
 
   if (state.status === "success") {
     return (
       <div className="space-y-4">
-        <WorkflowSuccess kind="checkout" {...state.result} />
+        <WorkflowSuccess
+          kind="checkout"
+          headingRef={successHeadingRef}
+          {...state.result}
+        />
         <button
           type="button"
           onClick={onReset}
@@ -129,10 +145,26 @@ function CheckoutConfirmation({
 
   const binError = state.fieldErrors.binNumber?.[0];
   const cardError = state.fieldErrors.pantherCardCollected?.[0];
+  const eligibleBins = state.eligibleBins ?? lookupState.preview.eligibleBins;
+  const selectedBin = eligibleBins.some(
+    (bin) => bin.binNumber === state.values.binNumber,
+  )
+    ? state.values.binNumber
+    : (eligibleBins.find((bin) => bin.reserved)?.binNumber ??
+      eligibleBins[0]?.binNumber ??
+      "");
+  const eligibleBinListKey = state.eligibleBins
+    ? eligibleBins
+        .map((bin) => `${bin.binNumber}:${bin.reserved ? "r" : "a"}`)
+        .join("|")
+    : "initial";
 
   return (
     <div className="space-y-5">
-      <CheckoutPreviewPanel preview={lookupState.preview} />
+      <CheckoutPreviewPanel
+        preview={lookupState.preview}
+        headingRef={previewHeadingRef}
+      />
       <form
         action={formAction}
         onSubmit={guardSubmission}
@@ -140,8 +172,9 @@ function CheckoutConfirmation({
       >
         <FormAlert message={state.formError} />
         <EligibleBinSelect
-          bins={lookupState.preview.eligibleBins}
-          defaultValue={state.values.binNumber}
+          key={eligibleBinListKey}
+          bins={eligibleBins}
+          defaultValue={selectedBin}
           error={binError}
         />
         <PantherCardConfirmation
@@ -272,11 +305,27 @@ function ReturnConfirmation({
     initialState,
   );
   const guardSubmission = useDuplicateSubmissionGuard(pending);
+  const previewHeadingRef = useRef<HTMLHeadingElement>(null);
+  const successHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    previewHeadingRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (state.status === "success") {
+      successHeadingRef.current?.focus();
+    }
+  }, [state.status]);
 
   if (state.status === "success") {
     return (
       <div className="space-y-4">
-        <WorkflowSuccess kind="return" {...state.result} />
+        <WorkflowSuccess
+          kind="return"
+          headingRef={successHeadingRef}
+          {...state.result}
+        />
         <button
           type="button"
           onClick={onReset}
@@ -292,7 +341,10 @@ function ReturnConfirmation({
   const cardError = state.fieldErrors.pantherCardReturned?.[0];
   return (
     <div className="space-y-5">
-      <ReturnPreviewPanel preview={lookupState.preview} />
+      <ReturnPreviewPanel
+        preview={lookupState.preview}
+        headingRef={previewHeadingRef}
+      />
       <form
         action={formAction}
         onSubmit={guardSubmission}

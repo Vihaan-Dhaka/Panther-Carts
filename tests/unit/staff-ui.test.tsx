@@ -33,6 +33,7 @@ describe("staff station UI", () => {
 
     expect(html).toContain("Jordan Panther");
     expect(html).toContain("900123456");
+    expect(html).toContain('tabindex="-1"');
     expect(html).not.toMatch(/private@example|14045550123|internal-student-id/);
   });
 
@@ -46,6 +47,7 @@ describe("staff station UI", () => {
     expect(html).toContain("Jordan Panther");
     expect(html).toContain("900123456");
     expect(html).toContain("Bin 014");
+    expect(html).toContain('tabindex="-1"');
     expect(html).not.toMatch(/private@example|14045550123|internal-student-id/);
   });
 
@@ -98,11 +100,28 @@ describe("staff station UI", () => {
         kind === "checkout" ? "Checkout complete" : "Check-in complete",
       );
       expect(html).toContain("safe retry");
+      expect(html).toContain('tabindex="-1"');
       expect(html).not.toMatch(
         /private@example|14045550123|internal-student-id/,
       );
     },
   );
+
+  it("keeps a committed success truthful when identity cannot be refreshed", () => {
+    const html = renderToStaticMarkup(
+      <WorkflowSuccess
+        kind="checkout"
+        student={null}
+        binNumber="1"
+        idempotentReplay={false}
+      />,
+    );
+
+    expect(html).toContain("Checkout complete");
+    expect(html).toContain("Bin 1 is checked out");
+    expect(html).toContain("PantherCard collection was recorded");
+    expect(html).not.toContain("Panther ID");
+  });
 
   it("claims one submission and blocks duplicates until the attempt settles", () => {
     const lock = { current: false };

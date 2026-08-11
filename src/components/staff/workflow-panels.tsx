@@ -3,6 +3,7 @@ import type {
   ReturnPreview,
   StaffStudent,
 } from "@/lib/queue/staff-rentals";
+import type { Ref } from "react";
 
 export function StudentIdentity({ student }: { student: StaffStudent }) {
   return (
@@ -29,8 +30,10 @@ export function StudentIdentity({ student }: { student: StaffStudent }) {
 
 export function CheckoutPreviewPanel({
   preview,
+  headingRef,
 }: {
   preview: CheckoutPreview;
+  headingRef?: Ref<HTMLHeadingElement>;
 }) {
   return (
     <div aria-live="polite" className="space-y-5">
@@ -38,7 +41,11 @@ export function CheckoutPreviewPanel({
         <p className="text-sm font-bold uppercase tracking-[0.16em] text-indigo-700">
           Pickup found
         </p>
-        <h3 className="mt-1 text-xl font-bold text-slate-950">
+        <h3
+          ref={headingRef}
+          tabIndex={-1}
+          className="mt-1 text-xl font-bold text-slate-950 focus:outline-none"
+        >
           Confirm the physical handoff
         </h3>
       </div>
@@ -47,14 +54,24 @@ export function CheckoutPreviewPanel({
   );
 }
 
-export function ReturnPreviewPanel({ preview }: { preview: ReturnPreview }) {
+export function ReturnPreviewPanel({
+  preview,
+  headingRef,
+}: {
+  preview: ReturnPreview;
+  headingRef?: Ref<HTMLHeadingElement>;
+}) {
   return (
     <div aria-live="polite" className="space-y-5">
       <div>
         <p className="text-sm font-bold uppercase tracking-[0.16em] text-amber-700">
           Active rental found · Bin {preview.binNumber}
         </p>
-        <h3 className="mt-1 text-xl font-bold text-slate-950">
+        <h3
+          ref={headingRef}
+          tabIndex={-1}
+          className="mt-1 text-xl font-bold text-slate-950 focus:outline-none"
+        >
           Return the physical PantherCard
         </h3>
       </div>
@@ -155,11 +172,13 @@ export function WorkflowSuccess({
   student,
   binNumber,
   idempotentReplay,
+  headingRef,
 }: {
   kind: "checkout" | "return";
-  student: StaffStudent;
+  student: StaffStudent | null;
   binNumber: string;
   idempotentReplay: boolean;
+  headingRef?: Ref<HTMLHeadingElement>;
 }) {
   const checkout = kind === "checkout";
   return (
@@ -171,12 +190,18 @@ export function WorkflowSuccess({
       <p className="text-sm font-bold uppercase tracking-[0.16em] text-emerald-700">
         {checkout ? "Checkout complete" : "Check-in complete"}
       </p>
-      <h3 className="mt-2 text-xl font-bold">
+      <h3
+        ref={headingRef}
+        tabIndex={-1}
+        className="mt-2 text-xl font-bold focus:outline-none"
+      >
         Bin {binNumber} {checkout ? "is checked out" : "was returned"}.
       </h3>
-      <p className="mt-2 text-sm leading-6">
-        {student.fullName} · Panther ID {student.pantherId}
-      </p>
+      {student ? (
+        <p className="mt-2 text-sm leading-6">
+          {student.fullName} · Panther ID {student.pantherId}
+        </p>
+      ) : null}
       <p className="mt-2 text-sm leading-6">
         {checkout
           ? "The PantherCard collection was recorded."

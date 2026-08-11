@@ -15,22 +15,24 @@ const BIN_ID = "a83ee1cf-bd03-4d54-9272-bab9459c92db";
 const KEY = "7b830507-034f-4746-9a67-f7e9184d40bc";
 
 type Response = { data: unknown; error: { message: string } | null };
+type QueryBuilder = Record<string, ReturnType<typeof vi.fn>>;
 
 function query(response: Response) {
-  const builder: Record<string, ReturnType<typeof vi.fn>> = {};
+  const builder: QueryBuilder = {};
   builder.select = vi.fn(() => builder);
   builder.eq = vi.fn(() => builder);
-  builder.order = vi.fn().mockResolvedValue(response);
+  builder.order = vi.fn(() => builder);
+  builder.limit = vi.fn().mockResolvedValue(response);
   builder.maybeSingle = vi.fn().mockResolvedValue(response);
   return builder;
 }
 
 function fakeClient(options?: {
   session?: unknown;
-  tables?: Record<string, Response>;
+  tables?: Record<string, Response | Response[]>;
   rpc?: Response;
 }) {
-  const tables: Record<string, Response> = {
+  const tables: Record<string, Response | Response[]> = {
     sessions: {
       data:
         options && "session" in options
@@ -41,14 +43,24 @@ function fakeClient(options?: {
     ...(options?.tables ?? {}),
   };
   const builders = Object.fromEntries(
-    Object.entries(tables).map(([table, response]) => [table, query(response)]),
-  );
-  const from = vi.fn((table: string) => builders[table]);
+    Object.entries(tables).map(([table, responses]) => [
+      table,
+      (Array.isArray(responses) ? responses : [responses]).map(query),
+    ]),
+  ) as Record<string, QueryBuilder[]>;
+  const callIndexes: Record<string, number> = {};
+  const from = vi.fn((table: string) => {
+    const tableBuilders = builders[table];
+    const index = callIndexes[table] ?? 0;
+    callIndexes[table] = index + 1;
+    return tableBuilders?.[Math.min(index, tableBuilders.length - 1)];
+  });
   const rpc = vi
     .fn()
     .mockResolvedValue(options?.rpc ?? { data: null, error: null });
   return {
     client: { from, rpc } as unknown as StaffRentalDatabaseClient,
+    builders,
     from,
     rpc,
   };
@@ -100,6 +112,20 @@ const publicStudentTable = {
 };
 
 describe("staff station server operations", () => {
+  it("resolves access only through the staff code column", async () => {
+    const { client, builders } = fakeClient();
+
+    await expect(
+      getStaffStationAvailability(client, "staff-secret"),
+    ).resolves.toEqual({ available: true });
+    expect(builders.sessions[0].select).toHaveBeenCalledWith("id,status");
+    expect(builders.sessions[0].eq).toHaveBeenCalledOnce();
+    expect(builders.sessions[0].eq).toHaveBeenCalledWith(
+      "staff_code",
+      "staff-secret",
+    );
+  });
+
   it.each([
     [null, "invalid"],
     [{ id: SESSION_ID, status: "DRAFT" }, "not active"],
@@ -147,10 +173,13 @@ describe("staff station server operations", () => {
           error: null,
         },
         students: publicStudentTable.students,
-        bins: {
-          data: [{ id: BIN_ID, bin_number: "1", status: "RESERVED" }],
-          error: null,
-        },
+        bins: [
+          {
+            data: { id: BIN_ID, bin_number: "1", status: "RESERVED" },
+            error: null,
+          },
+          { data: [], error: null },
+        ],
       },
     });
 
@@ -234,7 +263,7 @@ describe("staff station server operations", () => {
     expect(rpc.mock.calls[1][1].p_idempotency_key).toBe(KEY);
   });
 
-  it("returns a generic checkout error for malformed post-RPC student data", async () => {
+  it("reports committed checkout success when the identity refresh fails", async () => {
     const { client } = fakeClient({
       tables: {
         students: {
@@ -254,10 +283,71 @@ describe("staff station server operations", () => {
       pantherCardCollected: "on",
     });
 
-    expect(JSON.stringify(state)).toContain("try again");
+    expect(state).toMatchObject({
+      status: "success",
+      result: { student: null, binNumber: "1" },
+    });
+    expect(JSON.stringify(state)).not.toContain("try again");
     expect(JSON.stringify(state)).not.toMatch(
       /private@example|credentials|phone/,
     );
+  });
+
+  it("refreshes eligible bins after an authoritative BIN_NOT_USABLE error", async () => {
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const replacementBinId = "1d149423-eed2-4d40-b486-9399b17eb33d";
+    const { client } = fakeClient({
+      tables: {
+        queue_entries: {
+          data: {
+            id: ENTRY_ID,
+            student_id: STUDENT_ID,
+            reserved_bin_id: BIN_ID,
+            pickup_expires_at: future,
+            status: "READY",
+          },
+          error: null,
+        },
+        reservations: {
+          data: { bin_id: BIN_ID, status: "ACTIVE", expires_at: future },
+          error: null,
+        },
+        students: publicStudentTable.students,
+        bins: [
+          {
+            data: { id: BIN_ID, bin_number: "1", status: "RESERVED" },
+            error: null,
+          },
+          {
+            data: [
+              {
+                id: replacementBinId,
+                bin_number: "12",
+                status: "AVAILABLE",
+              },
+            ],
+            error: null,
+          },
+        ],
+      },
+      rpc: {
+        data: null,
+        error: { message: "PANTHER_CARTS:BIN_NOT_USABLE" },
+      },
+    });
+
+    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+      binNumber: "2",
+      pantherCardCollected: "on",
+    });
+
+    expect(state).toMatchObject({
+      status: "error",
+      eligibleBins: [
+        { binNumber: "1", reserved: true },
+        { binNumber: "12", reserved: false },
+      ],
+    });
   });
 
   it("looks up a return by bin and creates a fresh UUID confirmation attempt", async () => {
@@ -349,6 +439,29 @@ describe("staff station server operations", () => {
       },
     });
     expect(rpc.mock.calls[0][1].p_idempotency_key).toBe(KEY);
+  });
+
+  it("reports committed return success when the identity refresh fails", async () => {
+    const { client } = fakeClient({
+      tables: {
+        students: {
+          data: null,
+          error: { message: "transient read failure with private detail" },
+        },
+      },
+      rpc: returnRpcData(),
+    });
+
+    const state = await executeReturn(client, "staff-secret", KEY, {
+      binNumber: "1",
+      pantherCardReturned: "on",
+    });
+
+    expect(state).toMatchObject({
+      status: "success",
+      result: { student: null, binNumber: "1" },
+    });
+    expect(JSON.stringify(state)).not.toMatch(/try again|private detail/);
   });
 
   it("maps unexpected return failures without exposing raw database text", async () => {

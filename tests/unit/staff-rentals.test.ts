@@ -17,27 +17,39 @@ const OTHER_BIN_ID = "80622a3a-bd0e-47d6-9c40-91c91e976a89";
 const IDEMPOTENCY_KEY = "7b830507-034f-4746-9a67-f7e9184d40bc";
 
 type Response = { data: unknown; error: { message: string } | null };
+type QueryBuilder = Record<string, ReturnType<typeof vi.fn>>;
 
 function query(response: Response) {
-  const builder: Record<string, ReturnType<typeof vi.fn>> = {};
+  const builder: QueryBuilder = {};
   builder.select = vi.fn(() => builder);
   builder.eq = vi.fn(() => builder);
-  builder.order = vi.fn().mockResolvedValue(response);
+  builder.order = vi.fn(() => builder);
+  builder.limit = vi.fn().mockResolvedValue(response);
   builder.maybeSingle = vi.fn().mockResolvedValue(response);
   return builder;
 }
 
 function fakeClient(
-  tables: Record<string, Response>,
+  tables: Record<string, Response | Response[]>,
   rpcResponse: Response = { data: null, error: null },
 ) {
   const builders = Object.fromEntries(
-    Object.entries(tables).map(([table, response]) => [table, query(response)]),
-  );
-  const from = vi.fn((table: string) => builders[table]);
+    Object.entries(tables).map(([table, responses]) => [
+      table,
+      (Array.isArray(responses) ? responses : [responses]).map(query),
+    ]),
+  ) as Record<string, QueryBuilder[]>;
+  const callIndexes: Record<string, number> = {};
+  const from = vi.fn((table: string) => {
+    const tableBuilders = builders[table];
+    const index = callIndexes[table] ?? 0;
+    callIndexes[table] = index + 1;
+    return tableBuilders?.[Math.min(index, tableBuilders.length - 1)];
+  });
   const rpc = vi.fn().mockResolvedValue(rpcResponse);
   return {
     client: { from, rpc } as unknown as StaffRentalDatabaseClient,
+    builders,
     from,
     rpc,
   };
@@ -49,7 +61,7 @@ function futureTime() {
 
 describe("staff checkout and return database wrappers", () => {
   it("returns only public student identity and eligible checkout bins", async () => {
-    const { client } = fakeClient({
+    const { client, builders } = fakeClient({
       queue_entries: {
         data: {
           id: ENTRY_ID,
@@ -78,19 +90,24 @@ describe("staff checkout and return database wrappers", () => {
         },
         error: null,
       },
-      bins: {
-        data: [
-          { id: RESERVED_BIN_ID, bin_number: "1", status: "RESERVED" },
-          { id: AVAILABLE_BIN_ID, bin_number: "2", status: "AVAILABLE" },
-          { id: OTHER_BIN_ID, bin_number: "3", status: "OUT" },
-          {
-            id: "70a4ebaf-e410-4148-a816-a26fcbf3a774",
-            bin_number: "4",
-            status: "RESERVED",
-          },
-        ],
-        error: null,
-      },
+      bins: [
+        {
+          data: { id: RESERVED_BIN_ID, bin_number: "1", status: "RESERVED" },
+          error: null,
+        },
+        {
+          data: [
+            { id: AVAILABLE_BIN_ID, bin_number: "2", status: "AVAILABLE" },
+            { id: OTHER_BIN_ID, bin_number: "10", status: "AVAILABLE" },
+            {
+              id: "70a4ebaf-e410-4148-a816-a26fcbf3a774",
+              bin_number: "3",
+              status: "AVAILABLE",
+            },
+          ],
+          error: null,
+        },
+      ],
     });
 
     const preview = await getCheckoutPreview(client, SESSION_ID, "0427");
@@ -100,11 +117,43 @@ describe("staff checkout and return database wrappers", () => {
       eligibleBins: [
         { binNumber: "1", reserved: true },
         { binNumber: "2", reserved: false },
+        { binNumber: "3", reserved: false },
+        { binNumber: "10", reserved: false },
       ],
     });
     expect(JSON.stringify(preview)).not.toMatch(
       /private@example|404555|student_id|reserved_bin_id|81bbf354/,
     );
+
+    expect(builders.queue_entries[0].select).toHaveBeenCalledWith(
+      "id,student_id,reserved_bin_id,pickup_expires_at,status",
+    );
+    expect(builders.queue_entries[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["pickup_code", "0427"],
+      ["status", "READY"],
+    ]);
+    expect(builders.reservations[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["queue_entry_id", ENTRY_ID],
+      ["status", "ACTIVE"],
+    ]);
+    expect(builders.students[0].select).toHaveBeenCalledWith(
+      "full_name,panther_id",
+    );
+    expect(builders.students[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["id", STUDENT_ID],
+    ]);
+    expect(builders.bins[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["id", RESERVED_BIN_ID],
+    ]);
+    expect(builders.bins[1].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["status", "AVAILABLE"],
+    ]);
+    expect(builders.bins[1].limit).toHaveBeenCalledWith(1_000);
   });
 
   it("rejects invalid, expired, inactive, and malformed checkout previews safely", async () => {
@@ -166,7 +215,7 @@ describe("staff checkout and return database wrappers", () => {
   });
 
   it("looks up an active return by physical bin number without exposing PII", async () => {
-    const { client } = fakeClient({
+    const { client, builders } = fakeClient({
       bins: {
         data: { id: RESERVED_BIN_ID, bin_number: "014", status: "OUT" },
         error: null,
@@ -192,6 +241,19 @@ describe("staff checkout and return database wrappers", () => {
       binNumber: "014",
     });
     expect(JSON.stringify(preview)).not.toMatch(/email|phone|private@example/);
+    expect(builders.bins[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["bin_number", "014"],
+    ]);
+    expect(builders.rentals[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["bin_id", RESERVED_BIN_ID],
+      ["status", "OUT"],
+    ]);
+    expect(builders.students[0].eq.mock.calls).toEqual([
+      ["session_id", SESSION_ID],
+      ["id", STUDENT_ID],
+    ]);
   });
 
   it.each([

@@ -50,6 +50,7 @@ export type ReturnResult = {
 };
 
 const SAFE_STAFF_LABEL = "Staff station";
+const MAX_AVAILABLE_BIN_OPTIONS = 1_000;
 
 function databaseFailure(): QueueOperationError {
   return new QueueOperationError(null);
@@ -168,39 +169,64 @@ export async function getCheckoutPreview(
     sessionId,
     entry.data.student_id,
   );
-  const { data: binsData, error: binsError } = await client
+  const { data: reservedBinData, error: reservedBinError } = await client
     .from("bins")
     .select("id,bin_number,status")
     .eq("session_id", sessionId)
-    .order("bin_number");
+    .eq("id", entry.data.reserved_bin_id)
+    .maybeSingle();
 
-  if (binsError) {
+  if (reservedBinError) {
     throw databaseFailure();
   }
-
-  const bins = z.array(staffBinRowSchema).safeParse(binsData);
-  if (!bins.success) {
-    throw databaseFailure();
+  if (reservedBinData === null) {
+    throw new QueueOperationError("BIN_NOT_FOUND");
   }
 
-  const reservedBin = bins.data.find(
-    (bin) => bin.id === entry.data.reserved_bin_id,
-  );
-  if (!reservedBin || reservedBin.status !== "RESERVED") {
+  const reservedBin = staffBinRowSchema.safeParse(reservedBinData);
+  if (!reservedBin.success) {
+    throw databaseFailure();
+  }
+  if (reservedBin.data.status !== "RESERVED") {
     throw new QueueOperationError("BIN_NOT_USABLE");
+  }
+
+  // A physical station should never approach this bound. Keeping it explicit
+  // avoids relying on an unknown PostgREST max-rows setting, while the reserved
+  // bin is fetched separately so a valid pickup cannot disappear at the cap.
+  const { data: availableBinsData, error: availableBinsError } = await client
+    .from("bins")
+    .select("id,bin_number,status")
+    .eq("session_id", sessionId)
+    .eq("status", "AVAILABLE")
+    .order("bin_number")
+    .limit(MAX_AVAILABLE_BIN_OPTIONS);
+
+  if (availableBinsError) {
+    throw databaseFailure();
+  }
+
+  const availableBins = z.array(staffBinRowSchema).safeParse(availableBinsData);
+  if (!availableBins.success) {
+    throw databaseFailure();
+  }
+  if (availableBins.data.some((bin) => bin.status !== "AVAILABLE")) {
+    throw databaseFailure();
   }
 
   return {
     student,
-    eligibleBins: bins.data
-      .filter(
-        (bin) =>
-          bin.id === entry.data.reserved_bin_id || bin.status === "AVAILABLE",
-      )
+    eligibleBins: [reservedBin.data, ...availableBins.data]
       .map((bin) => ({
         binNumber: bin.bin_number,
         reserved: bin.id === entry.data.reserved_bin_id,
-      })),
+      }))
+      .sort((left, right) =>
+        left.binNumber.localeCompare(right.binNumber, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      ),
   };
 }
 
