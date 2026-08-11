@@ -113,10 +113,13 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
     } finally {
       if (!committed) await firstClient.query("rollback");
       firstClient.release();
+      if (committed && sessionId) {
+        // Keep direct reruns self-healing even when a post-commit assertion
+        // fails (for example, while mutation-testing the singleton lock).
+        await pool.query(`select public.admin_start_session($1)`, [sessionId]);
+        await pool.query(`select public.admin_end_session($1)`, [sessionId]);
+      }
     }
-
-    await pool.query(`select public.admin_start_session($1)`, [sessionId]);
-    await pool.query(`select public.admin_end_session($1)`, [sessionId]);
   });
 
   it("keeps every reporting source and Notify mutation session-scoped", async () => {
