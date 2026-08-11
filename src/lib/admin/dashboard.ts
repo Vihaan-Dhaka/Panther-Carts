@@ -123,6 +123,9 @@ function validationError(error: z.ZodError): AdminActionResult {
 async function openSessionQuery(
   client: AdminDatabaseClient,
 ): Promise<AdminSessionRow | null> {
+  // Keep legacy/pre-dashboard sessions visible. The one-open invariant applies
+  // to the production admin creation path, but reads still support existing
+  // sessions that predate its idempotency metadata.
   const active = await sessionByStatus(client, "ACTIVE");
   if (active) return active;
   return sessionByStatus(client, "DRAFT");
@@ -177,7 +180,7 @@ async function requireOpenSession(
   return session;
 }
 
-async function requireEndTargetSession(
+async function requireDisplayedSession(
   client: AdminDatabaseClient,
 ): Promise<AdminSessionRow> {
   const session = await currentSessionQuery(client);
@@ -634,7 +637,7 @@ export async function executeEndAdminSession(
   client: AdminDatabaseClient,
 ): Promise<AdminActionResult> {
   try {
-    const session = await requireEndTargetSession(client);
+    const session = await requireDisplayedSession(client);
     const result = await sessionRpc(
       client,
       "admin_end_session",
@@ -694,7 +697,7 @@ export async function executeNotifyAdminRental(
   const parsed = adminNotifySchema.safeParse(input);
   if (!parsed.success) return validationError(parsed.error);
   try {
-    const session = await requireEndTargetSession(client);
+    const session = await requireDisplayedSession(client);
     const { data, error } = await client.rpc("admin_notify_rental", {
       p_session_id: session.id,
       p_rental_id: parsed.data.rentalId,

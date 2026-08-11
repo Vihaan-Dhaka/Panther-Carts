@@ -13,6 +13,7 @@ import {
   getPool,
   getReadyDetails,
   hold,
+  isStillPending,
   joinQueue,
   returnRental,
 } from "./helpers/db";
@@ -39,19 +40,6 @@ import {
 afterAll(async () => {
   await closePool();
 });
-
-/** Resolves true if the promise is still pending after `ms`. */
-async function isStillPending(p: Promise<unknown>, ms = 700): Promise<boolean> {
-  const marker = Symbol("pending");
-  const result = await Promise.race([
-    p.then(
-      () => "settled",
-      () => "settled",
-    ),
-    new Promise((resolve) => setTimeout(() => resolve(marker), ms)),
-  ]);
-  return result === marker;
-}
 
 /** Open a transaction on a dedicated connection and hold the session lock. */
 async function holdSessionLock(sessionId: string): Promise<PoolClient> {

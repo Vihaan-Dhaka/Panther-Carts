@@ -296,9 +296,15 @@ the raw unique-constraint error. The suite therefore detects a removed or
 inconsistently-keyed advisory lock rather than passing because operations
 happened to run sequentially.
 
-Races are forced with a **lock barrier**, not hopeful parallelism: each call is
-parked behind an advisory lock held on a separate connection, and the locks are
-released together so the calls enter the contended region simultaneously.
+The dashboard-create singleton lock is proved the same way: the first creation
+is held uncommitted while a competing request is dispatched. Removing
+`lock_idempotency_key('admin_create_session_open', 'singleton')` makes the
+competitor surface the partial-index duplicate-key error instead of
+`SESSION_ALREADY_OPEN`.
+
+Races are forced with a **controlled transaction barrier**, not hopeful
+parallelism: calls are parked behind advisory locks held on separate
+connections, or behind an explicitly uncommitted conflicting transaction.
 Dispatching two promises alone is not sufficient — the first typically
 completes before the second begins, and the race never occurs.
 

@@ -9,6 +9,7 @@ import {
   forceOverdue,
   getPool,
   getReadyDetails,
+  isStillPending,
   joinQueue,
 } from "./helpers/db";
 
@@ -73,30 +74,47 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
     expect(endReplay.rows[0].result.idempotent_replay).toBe(true);
   });
 
-  it("allows only one dashboard session when two browser renders create concurrently", async () => {
+  it("serializes two dashboard creates and gives the loser a clean domain error", async () => {
     const pool = getPool();
-    const attempts = await Promise.allSettled(
-      ["First tab", "Second tab"].map((name) =>
-        pool.query(
-          `select public.admin_create_session($1, $2, $3, $4) as result`,
-          [name, 60, 10, randomUUID()],
-        ),
-      ),
-    );
-    const fulfilled = attempts.filter(
-      (attempt) => attempt.status === "fulfilled",
-    );
-    const rejected = attempts.filter(
-      (attempt) => attempt.status === "rejected",
-    );
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect(String(rejected[0].reason)).toMatch(/SESSION_ALREADY_OPEN/);
+    const firstClient = await pool.connect();
+    let committed = false;
+    let sessionId = "";
+    try {
+      await firstClient.query("begin");
+      const first = await firstClient.query(
+        `select public.admin_create_session($1, $2, $3, $4) as result`,
+        ["First tab", 60, 10, randomUUID()],
+      );
+      sessionId = first.rows[0].result.session.id as string;
 
-    if (fulfilled[0].status !== "fulfilled") {
-      throw new Error("Expected one dashboard session to be created");
+      // The first row and singleton advisory lock remain uncommitted. A second
+      // browser request must wait; after commit it must recheck and return the
+      // domain error. Without the singleton lock it instead waits on the unique
+      // index and then surfaces a raw duplicate-key violation deterministically.
+      const competing = pool.query(
+        `select public.admin_create_session($1, $2, $3, $4) as result`,
+        ["Second tab", 60, 10, randomUUID()],
+      );
+      const wasPending = await isStillPending(competing);
+      await firstClient.query("commit");
+      committed = true;
+
+      const [result] = await Promise.allSettled([competing]);
+      expect(wasPending).toBe(true);
+      expect(result.status).toBe("rejected");
+      if (result.status !== "rejected") {
+        throw new Error(
+          "Expected the competing session creation to be rejected",
+        );
+      }
+      const reason = String(result.reason?.message ?? result.reason);
+      expect(reason).toMatch(/SESSION_ALREADY_OPEN/);
+      expect(reason).not.toMatch(/duplicate key|unique constraint/i);
+    } finally {
+      if (!committed) await firstClient.query("rollback");
+      firstClient.release();
     }
-    const sessionId = fulfilled[0].value.rows[0].result.session.id as string;
+
     await pool.query(`select public.admin_start_session($1)`, [sessionId]);
     await pool.query(`select public.admin_end_session($1)`, [sessionId]);
   });
