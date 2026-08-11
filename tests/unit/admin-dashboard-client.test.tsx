@@ -175,6 +175,7 @@ describe("admin dashboard client behavior", () => {
 
   it("pairs visual colors with readable status text and Notify only on active rentals", () => {
     render(<AdminDashboard {...props()} />);
+    expect(screen.getByText("Reserved — awaiting pickup")).toBeTruthy();
     const selector = screen.getByLabelText("Table view");
     fireEvent.change(selector, { target: { value: "rentals" } });
     const rentalsTable = screen.getByRole("table", {
@@ -236,5 +237,34 @@ describe("admin dashboard client behavior", () => {
     ).toBeTruthy();
     fireEvent.change(selector, { target: { value: "waitlist" } });
     expect(screen.getByText("The current waitlist is empty.")).toBeTruthy();
+  });
+
+  it("renders the no-session state with the session creation form", () => {
+    const noSession = snapshot();
+    noSession.session = null;
+    render(<AdminDashboard {...props({ snapshot: noSession })} />);
+    expect(
+      screen.getByRole("heading", { name: "No sessions yet" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Create the next session" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create draft" })).toBeTruthy();
+  });
+
+  it("keeps Notify available for outstanding rentals after a session closes", () => {
+    const closed = snapshot();
+    if (!closed.session) throw new Error("Fixture must include a session");
+    closed.session.status = "CLOSED";
+    closed.session.endedAt = NOW;
+    render(<AdminDashboard {...props({ snapshot: closed })} />);
+    expect(screen.getByText("Session status: CLOSED")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Create the next session" }),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Table view"), {
+      target: { value: "checked-out" },
+    });
+    expect(screen.getByRole("button", { name: "Notify" })).toBeTruthy();
   });
 });

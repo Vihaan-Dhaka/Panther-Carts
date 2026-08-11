@@ -33,7 +33,7 @@ function query(response: Response) {
   return builder;
 }
 
-function sessionRow() {
+function sessionRow(overrides: Record<string, unknown> = {}) {
   return {
     id: SESSION_ID,
     name: "Fall service",
@@ -45,6 +45,7 @@ function sessionRow() {
     created_at: NOW,
     started_at: NOW,
     ended_at: null,
+    ...overrides,
   };
 }
 
@@ -77,6 +78,39 @@ function emptyDashboardClient() {
     v_session_rentals: { data: [], error: null },
     v_current_waitlist: { data: [], error: null },
   });
+}
+
+function statusAwareClient(
+  sessions: Array<ReturnType<typeof sessionRow>>,
+  rpcResponse: Response = { data: null, error: null },
+) {
+  const base = emptyDashboardClient();
+  const sessionBuilders: Builder[] = [];
+  const from = vi.fn((name: string) => {
+    if (name !== "sessions") return base.builders[name];
+
+    let selectedStatus: unknown;
+    const builder = query({ data: null, error: null });
+    builder.eq.mockImplementation((column: string, value: unknown) => {
+      if (column === "status") selectedStatus = value;
+      return builder;
+    });
+    builder.maybeSingle.mockImplementation(async () => ({
+      data:
+        sessions.find((session) => session.status === selectedStatus) ?? null,
+      error: null,
+    }));
+    sessionBuilders.push(builder);
+    return builder;
+  });
+  const rpc = vi.fn().mockResolvedValue(rpcResponse);
+  return {
+    client: { from, rpc } as unknown as AdminDatabaseClient,
+    builders: base.builders,
+    from,
+    rpc,
+    sessionBuilders,
+  };
 }
 
 describe("admin dashboard data layer", () => {
@@ -140,7 +174,52 @@ describe("admin dashboard data layer", () => {
     });
   });
 
-  it("validates session creation and generates stable student/staff codes", async () => {
+  it("returns the no-session snapshot without querying reporting views", async () => {
+    const fake = statusAwareClient([]);
+    const result = await getAdminDashboardSnapshot(fake.client);
+    expect(result.session).toBeNull();
+    expect(result.overview.totalBins).toBe(0);
+    expect(fake.from.mock.calls.map(([name]) => name)).toEqual([
+      "sessions",
+      "sessions",
+      "sessions",
+    ]);
+  });
+
+  it("falls back to the latest closed session", async () => {
+    const closed = sessionRow({
+      name: "Closed service",
+      status: "CLOSED",
+      ended_at: NOW,
+    });
+    const result = await getAdminDashboardSnapshot(
+      statusAwareClient([closed]).client,
+    );
+    expect(result.session).toMatchObject({
+      name: "Closed service",
+      status: "CLOSED",
+      endedAt: NOW,
+    });
+  });
+
+  it("explicitly prefers an ACTIVE session when ACTIVE and DRAFT rows coexist", async () => {
+    const active = sessionRow({ name: "Live session", status: "ACTIVE" });
+    const draft = sessionRow({
+      id: "15f7d61c-a959-447c-bb3f-da59561b90a2",
+      name: "Stale draft",
+      status: "DRAFT",
+      started_at: null,
+    });
+    const fake = statusAwareClient([draft, active]);
+    const result = await getAdminDashboardSnapshot(fake.client);
+    expect(result.session).toMatchObject({
+      name: "Live session",
+      status: "ACTIVE",
+    });
+    expect(fake.sessionBuilders[0].eq).toHaveBeenCalledWith("status", "ACTIVE");
+  });
+
+  it("validates session creation while leaving access-code generation to PostgreSQL", async () => {
     const response = {
       session: {
         ...sessionRow(),
@@ -167,8 +246,8 @@ describe("admin dashboard data layer", () => {
       p_pickup_window_minutes: 10,
       p_idempotency_key: KEY,
     });
-    expect(args.p_student_code).toMatch(/^signup-[A-Za-z0-9_-]{16}$/);
-    expect(args.p_staff_code).toMatch(/^staff-[A-Za-z0-9_-]{16}$/);
+    expect(args).not.toHaveProperty("p_student_code");
+    expect(args).not.toHaveProperty("p_staff_code");
 
     const invalid = await executeCreateAdminSession(fake.client, {
       name: "",
@@ -178,6 +257,32 @@ describe("admin dashboard data layer", () => {
     });
     expect(invalid.status).toBe("error");
     expect(fake.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps the one-open-session invariant to a clean admin message", async () => {
+    const fake = fakeClient(
+      {},
+      {
+        data: null,
+        error: {
+          message:
+            "PANTHER_CARTS:SESSION_ALREADY_OPEN duplicate key internal detail",
+        },
+      },
+    );
+    const result = await executeCreateAdminSession(fake.client, {
+      name: "Second browser tab",
+      rentalDurationMinutes: "60",
+      pickupWindowMinutes: "10",
+      idempotencyKey: KEY,
+    });
+    expect(result).toEqual({
+      status: "error",
+      message:
+        "A draft or active session already exists. Use or end that session before creating another.",
+      fieldErrors: {},
+    });
+    expect(JSON.stringify(result)).not.toMatch(/duplicate key|internal detail/);
   });
 
   it("authoritatively resolves lifecycle/configuration mutations without a client session ID", async () => {
@@ -218,28 +323,110 @@ describe("admin dashboard data layer", () => {
     }
   });
 
-  it("rejects a reporting row returned from another session", async () => {
-    const fake = emptyDashboardClient();
-    fake.builders.v_current_out_rentals.range.mockResolvedValue({
-      data: [
+  it("rejects foreign-session rows from every reporting mapper", async () => {
+    const foreignSessionId = "15f7d61c-a959-447c-bb3f-da59561b90a2";
+    const contact = {
+      session_id: foreignSessionId,
+      full_name: "Jordan Panther",
+      panther_id: "900123456",
+      email: "jordan@example.edu",
+      phone: "+14045550123",
+    };
+    const cases = [
+      [
+        "v_current_out_rentals",
         {
+          ...contact,
           rental_id: RENTAL_ID,
-          session_id: "15f7d61c-a959-447c-bb3f-da59561b90a2",
           bin_number: "1",
-          full_name: "Jordan Panther",
-          panther_id: "900123456",
-          email: "jordan@example.edu",
-          phone: "+14045550123",
           checked_out_at: NOW,
           due_at: "2026-08-11T16:00:00.000Z",
           is_currently_late: false,
         },
       ],
+      [
+        "v_current_late_rentals",
+        {
+          ...contact,
+          rental_id: RENTAL_ID,
+          bin_number: "1",
+          checked_out_at: NOW,
+          due_at: "2026-08-11T14:00:00.000Z",
+        },
+      ],
+      ...["v_all_late_rentals", "v_session_rentals"].map((table) => [
+        table,
+        {
+          ...contact,
+          rental_id: RENTAL_ID,
+          bin_number: "1",
+          status: "OUT",
+          checked_out_at: NOW,
+          due_at: "2026-08-11T14:00:00.000Z",
+          returned_at: null,
+          was_late: false,
+          is_currently_late: true,
+        },
+      ]),
+      [
+        "v_inventory",
+        {
+          session_id: foreignSessionId,
+          bin_number: "1",
+          status: "AVAILABLE",
+          current_rental_id: null,
+          current_checked_out_at: null,
+          current_due_at: null,
+          is_currently_late: false,
+          current_full_name: null,
+          current_panther_id: null,
+          current_email: null,
+          current_phone: null,
+        },
+      ],
+      [
+        "v_current_waitlist",
+        {
+          ...contact,
+          queue_entry_id: "42aa10ce-237f-45c7-9345-29466cb33dbc",
+          queue_rank: 1,
+          joined_at: NOW,
+        },
+      ],
+    ] as Array<[string, Record<string, unknown>]>;
+
+    for (const [table, row] of cases) {
+      const fake = emptyDashboardClient();
+      fake.builders[table].range.mockResolvedValue({
+        data: [row],
+        error: null,
+      });
+      await expect(getAdminDashboardSnapshot(fake.client)).rejects.toThrow(
+        /Queue operation failed/,
+      );
+    }
+  });
+
+  it("sorts inventory by numeric bin number for display", async () => {
+    const fake = emptyDashboardClient();
+    fake.builders.v_inventory.range.mockResolvedValue({
+      data: ["10", "2"].map((binNumber) => ({
+        session_id: SESSION_ID,
+        bin_number: binNumber,
+        status: "AVAILABLE",
+        current_rental_id: null,
+        current_checked_out_at: null,
+        current_due_at: null,
+        is_currently_late: false,
+        current_full_name: null,
+        current_panther_id: null,
+        current_email: null,
+        current_phone: null,
+      })),
       error: null,
     });
-    await expect(getAdminDashboardSnapshot(fake.client)).rejects.toThrow(
-      /Queue operation failed/,
-    );
+    const result = await getAdminDashboardSnapshot(fake.client);
+    expect(result.inventory.map((row) => row.binNumber)).toEqual(["2", "10"]);
   });
 
   it("projects required student details while stripping internal session fields", async () => {
@@ -362,6 +549,38 @@ describe("admin dashboard data layer", () => {
       idempotentReplay: false,
     });
     expect(JSON.stringify(result)).not.toMatch(/outbox_id|body|provider/i);
+  });
+
+  it("notifies an outstanding rental from the closed session displayed by the dashboard", async () => {
+    const closed = sessionRow({
+      status: "CLOSED",
+      ended_at: NOW,
+    });
+    const fake = statusAwareClient([closed], {
+      data: {
+        outbox_id: "42aa10ce-237f-45c7-9345-29466cb33dbc",
+        body: "Panther Carts: Bin 1 is 12 minutes overdue.",
+        idempotent_replay: false,
+      },
+      error: null,
+    });
+    const result = await executeNotifyAdminRental(fake.client, {
+      rentalId: RENTAL_ID,
+      idempotencyKey: KEY,
+    });
+    expect(fake.rpc).toHaveBeenCalledWith("admin_notify_rental", {
+      p_session_id: SESSION_ID,
+      p_rental_id: RENTAL_ID,
+      p_idempotency_key: KEY,
+    });
+    expect(result.status).toBe("success");
+    expect(
+      fake.sessionBuilders.map((builder) => builder.eq.mock.calls[0]),
+    ).toEqual([
+      ["status", "ACTIVE"],
+      ["status", "DRAFT"],
+      ["status", "CLOSED"],
+    ]);
   });
 
   it("maps raw RPC failures to safe messages", async () => {

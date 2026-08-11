@@ -1,6 +1,5 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
@@ -84,6 +83,13 @@ function actionError(error: unknown): AdminActionResult {
         message: "That session is closed and can no longer be changed.",
         fieldErrors: {},
       };
+    case QueueErrorCode.SESSION_ALREADY_OPEN:
+      return {
+        status: "error",
+        message:
+          "A draft or active session already exists. Use or end that session before creating another.",
+        fieldErrors: {},
+      };
     case QueueErrorCode.NO_ACTIVE_RENTAL:
       return {
         status: "error",
@@ -117,11 +123,19 @@ function validationError(error: z.ZodError): AdminActionResult {
 async function openSessionQuery(
   client: AdminDatabaseClient,
 ): Promise<AdminSessionRow | null> {
+  const active = await sessionByStatus(client, "ACTIVE");
+  if (active) return active;
+  return sessionByStatus(client, "DRAFT");
+}
+
+async function sessionByStatus(
+  client: AdminDatabaseClient,
+  status: "ACTIVE" | "DRAFT",
+): Promise<AdminSessionRow | null> {
   const { data, error } = await client
     .from("sessions")
     .select(SESSION_SELECT)
-    .in("status", ["ACTIVE", "DRAFT"])
-    .order("status", { ascending: true })
+    .eq("status", status)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -482,9 +496,9 @@ export async function getAdminDashboardSnapshot(
   const allLateRentals = allLateParsed.data.map((row) =>
     historicalDto(row, session.id),
   );
-  const inventory = inventoryParsed.data.map((row) =>
-    inventoryDto(row, session.id),
-  );
+  const inventory = inventoryParsed.data
+    .map((row) => inventoryDto(row, session.id))
+    .sort((left, right) => Number(left.binNumber) - Number(right.binNumber));
   const sessionRentals = rentalsParsed.data.map((row) =>
     historicalDto(row, session.id),
   );
@@ -522,16 +536,6 @@ export async function getAdminDashboardSnapshot(
   };
 }
 
-function deterministicAccessCode(
-  kind: "student" | "staff",
-  idempotencyKey: string,
-): string {
-  const digest = createHash("sha256")
-    .update(`${kind}:${idempotencyKey}`)
-    .digest("base64url");
-  return `${kind === "student" ? "signup" : "staff"}-${digest.slice(0, 16)}`;
-}
-
 async function sessionRpc(
   client: AdminDatabaseClient,
   name: string,
@@ -559,14 +563,6 @@ export async function executeCreateAdminSession(
       p_name: parsed.data.name,
       p_rental_duration_minutes: parsed.data.rentalDurationMinutes,
       p_pickup_window_minutes: parsed.data.pickupWindowMinutes,
-      p_student_code: deterministicAccessCode(
-        "student",
-        parsed.data.idempotencyKey,
-      ),
-      p_staff_code: deterministicAccessCode(
-        "staff",
-        parsed.data.idempotencyKey,
-      ),
       p_idempotency_key: parsed.data.idempotencyKey,
     });
     return {
@@ -698,7 +694,7 @@ export async function executeNotifyAdminRental(
   const parsed = adminNotifySchema.safeParse(input);
   if (!parsed.success) return validationError(parsed.error);
   try {
-    const session = await requireOpenSession(client);
+    const session = await requireEndTargetSession(client);
     const { data, error } = await client.rpc("admin_notify_rental", {
       p_session_id: session.id,
       p_rental_id: parsed.data.rentalId,

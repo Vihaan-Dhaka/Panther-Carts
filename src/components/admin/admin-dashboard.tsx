@@ -910,6 +910,12 @@ export function AdminDashboard(props: AdminDashboardProps) {
             <li>
               <StatusBadge status="available" text="Available" />
             </li>
+            <li>
+              <StatusBadge
+                status="reserved"
+                text="Reserved — awaiting pickup"
+              />
+            </li>
           </ul>
           <p className="mt-4 text-sm leading-6 text-slate-600">
             Each color is paired with readable status text.

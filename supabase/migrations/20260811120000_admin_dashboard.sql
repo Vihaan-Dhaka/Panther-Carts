@@ -12,12 +12,18 @@ create unique index sessions_creation_idempotency_uidx
   on public.sessions (creation_idempotency_key)
   where creation_idempotency_key is not null;
 
+-- Sessions created by the dashboard are the production session lifecycle.
+-- Keep exactly one of those sessions open while preserving Ticket 1's ability
+-- to exercise independent, directly-seeded sessions concurrently.
+create unique index sessions_one_dashboard_open_uidx
+  on public.sessions ((true))
+  where creation_idempotency_key is not null
+    and status in ('DRAFT', 'ACTIVE');
+
 create or replace function public.admin_create_session(
   p_name text,
   p_rental_duration_minutes integer,
   p_pickup_window_minutes integer,
-  p_student_code text,
-  p_staff_code text,
   p_idempotency_key text
 )
 returns jsonb
@@ -28,25 +34,26 @@ as $$
 declare
   v_session public.sessions;
   v_fingerprint text;
+  v_student_code text;
+  v_staff_code text;
 begin
   if p_idempotency_key is null or btrim(p_idempotency_key) = '' then
     raise exception 'PANTHER_CARTS:IDEMPOTENCY_KEY_REQUIRED';
   end if;
   if p_name is null or btrim(p_name) = ''
      or p_rental_duration_minutes is null or p_rental_duration_minutes <= 0
-     or p_pickup_window_minutes is null or p_pickup_window_minutes <= 0
-     or p_student_code is null or btrim(p_student_code) = ''
-     or p_staff_code is null or btrim(p_staff_code) = '' then
+     or p_pickup_window_minutes is null or p_pickup_window_minutes <= 0 then
     raise exception 'PANTHER_CARTS:INVALID_ADMIN_INPUT';
   end if;
 
+  -- Different browser renders carry different request keys, so creation also
+  -- needs a lifecycle-wide lock to make the one-open-session check atomic.
+  perform public.lock_idempotency_key('admin_create_session_open', 'singleton');
   perform public.lock_idempotency_key('admin_create_session', p_idempotency_key);
   v_fingerprint := jsonb_build_object(
     'name', btrim(p_name),
     'rental_duration_minutes', p_rental_duration_minutes,
-    'pickup_window_minutes', p_pickup_window_minutes,
-    'student_code', btrim(p_student_code),
-    'staff_code', btrim(p_staff_code)
+    'pickup_window_minutes', p_pickup_window_minutes
   )::text;
 
   select * into v_session
@@ -63,6 +70,21 @@ begin
     );
   end if;
 
+  if exists (
+    select 1
+    from public.sessions
+    where creation_idempotency_key is not null
+      and status in ('DRAFT', 'ACTIVE')
+  ) then
+    raise exception 'PANTHER_CARTS:SESSION_ALREADY_OPEN';
+  end if;
+
+  -- PostgreSQL's UUID generator is cryptographically random. Generate bearer
+  -- credentials only after idempotency replay has been ruled out so retries
+  -- return the stored codes without deriving them from the request key.
+  v_student_code := 'signup-' || replace(gen_random_uuid()::text, '-', '');
+  v_staff_code := 'staff-' || replace(gen_random_uuid()::text, '-', '');
+
   insert into public.sessions (
     name,
     status,
@@ -75,8 +97,8 @@ begin
   ) values (
     btrim(p_name),
     'DRAFT',
-    btrim(p_student_code),
-    btrim(p_staff_code),
+    v_student_code,
+    v_staff_code,
     p_rental_duration_minutes,
     p_pickup_window_minutes,
     p_idempotency_key,
@@ -493,7 +515,7 @@ declare
   v_function text;
 begin
   foreach v_function in array array[
-    'admin_create_session(text,integer,integer,text,text,text)',
+    'admin_create_session(text,integer,integer,text)',
     'admin_configure_session(uuid,integer,integer)',
     'admin_start_session(uuid)',
     'admin_end_session(uuid)',

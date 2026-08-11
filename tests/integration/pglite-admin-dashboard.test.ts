@@ -31,39 +31,64 @@ describe("Ticket 4 admin PostgreSQL functions", () => {
         };
         idempotent_replay: boolean;
       };
-    }>(`select public.admin_create_session($1, $2, $3, $4, $5, $6) as result`, [
+    }>(`select public.admin_create_session($1, $2, $3, $4) as result`, [
       "Ticket 4",
       60,
       10,
-      `signup-${key}`,
-      `staff-${key}`,
       key,
     ]);
     const sessionId = first.rows[0].result.session.id;
     expect(first.rows[0].result).toMatchObject({
       session: {
         status: "DRAFT",
-        student_code: `signup-${key}`,
-        staff_code: `staff-${key}`,
       },
       idempotent_replay: false,
     });
+    expect(first.rows[0].result.session.student_code).toMatch(
+      /^signup-[a-f0-9]{32}$/,
+    );
+    expect(first.rows[0].result.session.staff_code).toMatch(
+      /^staff-[a-f0-9]{32}$/,
+    );
+    expect(first.rows[0].result.session.student_code).not.toContain(key);
+    expect(first.rows[0].result.session.staff_code).not.toContain(key);
 
     const replay = await db.query<{ result: { idempotent_replay: boolean } }>(
-      `select public.admin_create_session($1, $2, $3, $4, $5, $6) as result`,
-      ["Ticket 4", 60, 10, `signup-${key}`, `staff-${key}`, key],
+      `select public.admin_create_session($1, $2, $3, $4) as result`,
+      ["Ticket 4", 60, 10, key],
     );
     expect(replay.rows[0].result.idempotent_replay).toBe(true);
     await expect(
-      db.query(`select public.admin_create_session($1, $2, $3, $4, $5, $6)`, [
+      db.query(`select public.admin_create_session($1, $2, $3, $4)`, [
         "Different request",
         60,
         10,
-        `signup-${key}`,
-        `staff-${key}`,
         key,
       ]),
     ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
+    await expect(
+      db.query(`select public.admin_create_session($1, $2, $3, $4)`, [
+        "Second browser tab",
+        60,
+        10,
+        randomUUID(),
+      ]),
+    ).rejects.toThrow(/SESSION_ALREADY_OPEN/);
+    await expect(
+      db.query(
+        `insert into public.sessions (
+           name, status, student_code, staff_code,
+           rental_duration_minutes, pickup_window_minutes,
+           creation_idempotency_key
+         ) values ($1, 'DRAFT', $2, $3, 60, 10, $4)`,
+        [
+          "Bypass attempt",
+          `signup-${randomUUID()}`,
+          `staff-${randomUUID()}`,
+          randomUUID(),
+        ],
+      ),
+    ).rejects.toThrow(/sessions_one_dashboard_open_uidx/);
     expect(
       await count(
         db,
@@ -183,6 +208,21 @@ describe("Ticket 4 admin PostgreSQL functions", () => {
       [sessionId],
     );
     const rentalId = rental.rows[0].id;
+    await db.query(`select public.admin_end_session($1)`, [sessionId]);
+    const closedOutstanding = await db.query<{
+      status: string;
+      rental_status: string;
+    }>(
+      `select s.status, r.status as rental_status
+       from public.sessions s
+       join public.rentals r on r.session_id = s.id
+       where s.id = $1 and r.id = $2`,
+      [sessionId, rentalId],
+    );
+    expect(closedOutstanding.rows[0]).toEqual({
+      status: "CLOSED",
+      rental_status: "OUT",
+    });
     const key = randomUUID();
     const first = await db.query<{
       result: { outbox_id: string; body: string; idempotent_replay: boolean };

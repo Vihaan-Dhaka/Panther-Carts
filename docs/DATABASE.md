@@ -70,6 +70,9 @@ outcome recorded at return.
 
 - Durations positive: `sessions.rental_duration_minutes > 0`,
   `pickup_window_minutes > 0`.
+- **At most one dashboard-created session is open** (`DRAFT` or `ACTIVE`): a
+  partial unique index protects the production admin lifecycle, and
+  `admin_create_session` serializes different request keys before checking it.
 - Bin number unique per session: `unique (session_id, bin_number)`.
 - **Phone numbers are stored normalized**, enforced by
   `check (phone = public.normalize_phone(phone))` on both `students` and
@@ -150,8 +153,10 @@ rental/reservation impossible.
 - **notification creation**: every insert into `notification_outbox` uses a
   deterministic `dedupe_key` with `on conflict (dedupe_key) do nothing`
   (`INITIAL:<entry>`, `READY:<reservation>`, `HOLD:<reservation>`).
-- **Ticket 4 admin mutations**: `admin_create_session` locks its request key
-  and binds it to a request fingerprint; start, end, and duration updates are
+- **Ticket 4 admin mutations**: `admin_create_session` locks both the global
+  dashboard lifecycle and its request key, binds the key to a request
+  fingerprint, and generates independent random access codes in PostgreSQL;
+  start, end, and duration updates are
   state-idempotent; `admin_add_bins` uses the per-session uniqueness constraint
   and returns added/duplicate number lists; `admin_notify_rental` binds a
   `MANUAL:<request-key>` outbox intent to exactly one session and active rental.

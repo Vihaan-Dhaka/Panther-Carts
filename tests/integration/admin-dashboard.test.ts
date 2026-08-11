@@ -21,15 +21,29 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
     const pool = getPool();
     const key = randomUUID();
     const created = await pool.query(
-      `select public.admin_create_session($1, $2, $3, $4, $5, $6) as result`,
-      ["Real PostgreSQL admin", 60, 10, `signup-${key}`, `staff-${key}`, key],
+      `select public.admin_create_session($1, $2, $3, $4) as result`,
+      ["Real PostgreSQL admin", 60, 10, key],
     );
     const sessionId = created.rows[0].result.session.id as string;
+    expect(created.rows[0].result.session.student_code).toMatch(
+      /^signup-[a-f0-9]{32}$/,
+    );
+    expect(created.rows[0].result.session.staff_code).toMatch(
+      /^staff-[a-f0-9]{32}$/,
+    );
     const createReplay = await pool.query(
-      `select public.admin_create_session($1, $2, $3, $4, $5, $6) as result`,
-      ["Real PostgreSQL admin", 60, 10, `signup-${key}`, `staff-${key}`, key],
+      `select public.admin_create_session($1, $2, $3, $4) as result`,
+      ["Real PostgreSQL admin", 60, 10, key],
     );
     expect(createReplay.rows[0].result.idempotent_replay).toBe(true);
+    await expect(
+      pool.query(`select public.admin_create_session($1, $2, $3, $4)`, [
+        "Second browser tab",
+        60,
+        10,
+        randomUUID(),
+      ]),
+    ).rejects.toThrow(/SESSION_ALREADY_OPEN/);
 
     const bins = await pool.query(
       `select public.admin_add_bins($1, $2::text[]) as result`,
@@ -57,6 +71,34 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
       [sessionId],
     );
     expect(endReplay.rows[0].result.idempotent_replay).toBe(true);
+  });
+
+  it("allows only one dashboard session when two browser renders create concurrently", async () => {
+    const pool = getPool();
+    const attempts = await Promise.allSettled(
+      ["First tab", "Second tab"].map((name) =>
+        pool.query(
+          `select public.admin_create_session($1, $2, $3, $4) as result`,
+          [name, 60, 10, randomUUID()],
+        ),
+      ),
+    );
+    const fulfilled = attempts.filter(
+      (attempt) => attempt.status === "fulfilled",
+    );
+    const rejected = attempts.filter(
+      (attempt) => attempt.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0].reason)).toMatch(/SESSION_ALREADY_OPEN/);
+
+    if (fulfilled[0].status !== "fulfilled") {
+      throw new Error("Expected one dashboard session to be created");
+    }
+    const sessionId = fulfilled[0].value.rows[0].result.session.id as string;
+    await pool.query(`select public.admin_start_session($1)`, [sessionId]);
+    await pool.query(`select public.admin_end_session($1)`, [sessionId]);
   });
 
   it("keeps every reporting source and Notify mutation session-scoped", async () => {
@@ -109,6 +151,7 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
       [first.sessionId],
     );
     const rentalId = rental.rows[0].id as string;
+    await pool.query(`select public.admin_end_session($1)`, [first.sessionId]);
     const key = randomUUID();
     const notified = await pool.query(
       `select public.admin_notify_rental($1, $2, $3) as result`,

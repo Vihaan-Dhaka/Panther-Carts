@@ -21,13 +21,14 @@ const UNEXPECTED: AdminActionResult = {
 async function runAdminAction(
   operation: () => Promise<AdminActionResult>,
 ): Promise<AdminActionResult> {
+  let result: AdminActionResult;
   try {
-    const result = await operation();
-    if (result.status === "success") refresh();
-    return result;
+    result = await operation();
   } catch {
     return UNEXPECTED;
   }
+  if (result.status === "success") refresh();
+  return result;
 }
 
 export async function createSessionAction(
