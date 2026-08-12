@@ -1,9 +1,10 @@
 "use client";
 
 import {
+  useActionState,
+  useEffect,
   useRef,
   useState,
-  useTransition,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -18,6 +19,7 @@ import {
 } from "@/lib/admin/types";
 
 export type AdminMutationAction = (
+  previousState: AdminActionResult | null,
   formData: FormData,
 ) => Promise<AdminActionResult>;
 
@@ -39,31 +41,22 @@ const primaryButton =
   "rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-slate-800 focus:outline-2 focus:outline-offset-2 focus:outline-slate-950 disabled:cursor-not-allowed disabled:opacity-50";
 
 function useAdminMutation(action: AdminMutationAction) {
-  const [result, setResult] = useState<AdminActionResult | null>(null);
-  const [pending, startTransition] = useTransition();
   const submitting = useRef(false);
+  const [result, formAction, pending] = useActionState(action, null);
 
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (submitting.current) return;
+  useEffect(() => {
+    if (!pending) submitting.current = false;
+  }, [pending]);
+
+  function guardSubmission(event: FormEvent<HTMLFormElement>) {
+    if (submitting.current) {
+      event.preventDefault();
+      return;
+    }
     submitting.current = true;
-    const formData = new FormData(event.currentTarget);
-    startTransition(async () => {
-      try {
-        setResult(await action(formData));
-      } catch {
-        setResult({
-          status: "error",
-          message: "We could not complete that action. Please try again.",
-          fieldErrors: {},
-        });
-      } finally {
-        submitting.current = false;
-      }
-    });
   }
 
-  return { result, pending, submit };
+  return { result, pending, formAction, guardSubmission };
 }
 
 function FieldError({ errors }: { errors?: string[] }) {
@@ -115,7 +108,8 @@ function CreateSessionForm({
   action: AdminMutationAction;
   idempotencyKey: string;
 }) {
-  const { result, pending, submit } = useAdminMutation(action);
+  const { result, pending, formAction, guardSubmission } =
+    useAdminMutation(action);
   const errors = result?.status === "error" ? result.fieldErrors : {};
   return (
     <Panel title="Create the next session">
@@ -123,7 +117,11 @@ function CreateSessionForm({
         Creating a draft generates new student and staff access codes. Review
         the durations before starting it.
       </p>
-      <form onSubmit={submit} className="mt-5 grid gap-4 sm:grid-cols-3">
+      <form
+        action={formAction}
+        onSubmit={guardSubmission}
+        className="mt-5 grid gap-4 sm:grid-cols-3"
+      >
         <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
         <label className="text-sm font-semibold text-slate-800 sm:col-span-3">
           Session name
@@ -182,10 +180,15 @@ function ConfigurationForm({
   rentalDurationMinutes: number;
   pickupWindowMinutes: number;
 }) {
-  const { result, pending, submit } = useAdminMutation(action);
+  const { result, pending, formAction, guardSubmission } =
+    useAdminMutation(action);
   const errors = result?.status === "error" ? result.fieldErrors : {};
   return (
-    <form onSubmit={submit} className="mt-5 grid gap-4 sm:grid-cols-2">
+    <form
+      action={formAction}
+      onSubmit={guardSubmission}
+      className="mt-5 grid gap-4 sm:grid-cols-2"
+    >
       <label className="text-sm font-semibold text-slate-800">
         Rental duration (minutes)
         <input
@@ -231,9 +234,10 @@ function LifecycleButton({
   action: AdminMutationAction;
   kind: "start" | "end";
 }) {
-  const { result, pending, submit } = useAdminMutation(action);
+  const { result, pending, formAction, guardSubmission } =
+    useAdminMutation(action);
   return (
-    <form onSubmit={submit} className="mt-5">
+    <form action={formAction} onSubmit={guardSubmission} className="mt-5">
       <button
         className={
           kind === "end"
@@ -296,11 +300,13 @@ function BinForm({
   action: AdminMutationAction;
   mode: "single" | "range" | "paste";
 }) {
-  const { result, pending, submit } = useAdminMutation(action);
+  const { result, pending, formAction, guardSubmission } =
+    useAdminMutation(action);
   const errors = result?.status === "error" ? result.fieldErrors : {};
   return (
     <form
-      onSubmit={submit}
+      action={formAction}
+      onSubmit={guardSubmission}
       className="rounded-xl border border-slate-200 bg-slate-50 p-4"
     >
       <input type="hidden" name="mode" value={mode} />
@@ -395,11 +401,12 @@ export function StatusBadge({
   );
 }
 
-function dateTime(value: string | null): string {
+export function formatAdminDateTime(value: string | null): string {
   if (!value) return "—";
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "short",
     timeStyle: "short",
+    timeZone: "America/New_York",
   }).format(new Date(value));
 }
 
@@ -412,9 +419,10 @@ function NotifyButton({
   idempotencyKey: string;
   action: AdminMutationAction;
 }) {
-  const { result, pending, submit } = useAdminMutation(action);
+  const { result, pending, formAction, guardSubmission } =
+    useAdminMutation(action);
   return (
-    <form onSubmit={submit} className="min-w-28">
+    <form action={formAction} onSubmit={guardSubmission} className="min-w-28">
       <input type="hidden" name="rentalId" value={rentalId} />
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       <button
@@ -509,13 +517,13 @@ function RentalTable({
                 <StatusBadge status={row.visualStatus} text={row.statusText} />
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
-                {dateTime(row.checkedOutAt)}
+                {formatAdminDateTime(row.checkedOutAt)}
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
-                {dateTime(row.dueAt)}
+                {formatAdminDateTime(row.dueAt)}
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
-                {dateTime(row.returnedAt)}
+                {formatAdminDateTime(row.returnedAt)}
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
                 {row.rentalStatus === "OUT" ? (
@@ -605,7 +613,7 @@ function InventoryTable({
                 {row.phone ?? "—"}
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
-                {dateTime(row.currentDueAt)}
+                {formatAdminDateTime(row.currentDueAt)}
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
                 {row.currentRentalId ? (
@@ -680,7 +688,7 @@ function WaitlistTable({ snapshot }: { snapshot: AdminDashboardSnapshot }) {
                 {row.phone}
               </td>
               <td className="border-b border-slate-100 px-3 py-4">
-                {dateTime(row.joinedAt)}
+                {formatAdminDateTime(row.joinedAt)}
               </td>
             </tr>
           ))}
@@ -815,15 +823,15 @@ export function AdminDashboard(props: AdminDashboardProps) {
                 </span>
                 <span>
                   <strong className="text-slate-900">Created:</strong>{" "}
-                  {dateTime(session.createdAt)}
+                  {formatAdminDateTime(session.createdAt)}
                 </span>
                 <span>
                   <strong className="text-slate-900">Started:</strong>{" "}
-                  {dateTime(session.startedAt)}
+                  {formatAdminDateTime(session.startedAt)}
                 </span>
                 <span>
                   <strong className="text-slate-900">Ended:</strong>{" "}
-                  {dateTime(session.endedAt)}
+                  {formatAdminDateTime(session.endedAt)}
                 </span>
               </div>
               <div className="mt-5 grid gap-4 md:grid-cols-2">

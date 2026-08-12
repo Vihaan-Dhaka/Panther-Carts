@@ -10,7 +10,10 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AdminDashboard } from "@/components/admin/admin-dashboard";
+import {
+  AdminDashboard,
+  formatAdminDateTime,
+} from "@/components/admin/admin-dashboard";
 import type {
   AdminActionResult,
   AdminDashboardSnapshot,
@@ -146,6 +149,10 @@ function props(overrides: Record<string, unknown> = {}) {
 afterEach(cleanup);
 
 describe("admin dashboard client behavior", () => {
+  it("formats timestamps identically across server and browser locales", () => {
+    expect(formatAdminDateTime(NOW)).toBe("8/11/26, 11:00 AM");
+  });
+
   it("renders exactly seven accessible table choices and switches every view", () => {
     render(<AdminDashboard {...props()} />);
     const selector = screen.getByLabelText("Table view") as HTMLSelectElement;
@@ -250,6 +257,16 @@ describe("admin dashboard client behavior", () => {
       screen.getByRole("heading", { name: "Create the next session" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create draft" })).toBeTruthy();
+  });
+
+  it("wires admin mutations through the form action prop", () => {
+    const noSession = snapshot();
+    noSession.session = null;
+    render(<AdminDashboard {...props({ snapshot: noSession })} />);
+    const form = screen
+      .getByRole("button", { name: "Create draft" })
+      .closest("form");
+    expect(form?.getAttribute("action")).toBeTruthy();
   });
 
   it("keeps Notify available for outstanding rentals after a session closes", () => {

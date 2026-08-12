@@ -34,7 +34,7 @@ describe("admin Server Action refresh behavior", () => {
       throw new Error("refresh control flow");
     });
 
-    await expect(createSessionAction(new FormData())).rejects.toThrow(
+    await expect(createSessionAction(null, new FormData())).rejects.toThrow(
       /refresh control flow/,
     );
     expect(mocks.createSession).toHaveBeenCalledTimes(1);
@@ -43,7 +43,7 @@ describe("admin Server Action refresh behavior", () => {
 
   it("still maps an operation exception to the safe action error", async () => {
     mocks.createSession.mockRejectedValue(new Error("raw database detail"));
-    const result = await createSessionAction(new FormData());
+    const result = await createSessionAction(null, new FormData());
     expect(result).toEqual({
       status: "error",
       message: "We could not complete that admin action. Please try again.",
