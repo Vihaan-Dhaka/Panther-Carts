@@ -141,6 +141,15 @@ describe("Twilio adapter", () => {
     });
   });
 
+  it("treats an empty OptOutType as an absent classification", async () => {
+    await expect(
+      provider().parseInboundWebhook(inboundRequest({ OptOutType: "" })),
+    ).resolves.toMatchObject({
+      body: "cancel",
+      compliance: null,
+    });
+  });
+
   it.each(["missing", "altered-parameter", "wrong-url"])(
     "rejects %s signatures",
     async (scenario) => {

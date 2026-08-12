@@ -373,7 +373,8 @@ begin
   ) returning * into v_entry;
 
   perform public.allocate_bins(p_session_id);
-  select * into v_entry from public.queue_entries where id = v_entry.id;
+  select * into v_entry from public.queue_entries
+  where id = v_entry.id and session_id = p_session_id;
 
   if v_entry.status = 'READY' then
     v_position := 0;
@@ -381,7 +382,9 @@ begin
     v_body := public.sms_ready_body(v_entry.pickup_code, v_pickup_window);
     select r.id into v_reservation_id
     from public.reservations r
-    where r.queue_entry_id = v_entry.id and r.status = 'ACTIVE';
+    where r.queue_entry_id = v_entry.id
+      and r.session_id = p_session_id
+      and r.status = 'ACTIVE';
 
     -- Allocation created READY. Convert that one row into the combined first
     -- signup/pickup message rather than enqueueing INITIAL plus READY.
@@ -1167,6 +1170,9 @@ begin
   foreach v_role in array array['anon', 'authenticated'] loop
     if exists (select 1 from pg_roles where rolname = v_role) then
       execute format('revoke all on public.inbound_sms_events from %I', v_role);
+      execute format(
+        'revoke execute on all functions in schema public from %I', v_role
+      );
     end if;
   end loop;
 

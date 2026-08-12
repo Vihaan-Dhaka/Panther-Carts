@@ -198,6 +198,10 @@ acceptance is known but the claim token is stale, the row preserves the first
 unconfirmed provider message ID and detection timestamp without overwriting the
 current owner's delivery state.
 
+The application caps each claim at three rows. Three sequential 30-second
+provider deadlines plus a 15-second safety margin fit within the 120-second
+lease; callers cannot request a larger batch.
+
 This prevents simultaneous healthy workers from sending the same claimed row.
 It cannot make the external provider boundary exactly-once: if the provider
 accepts a message and the process crashes before

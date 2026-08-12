@@ -84,10 +84,14 @@ queue logic / database operations, with SMS as a server-side effect.
   authoritative mutation, and enqueues its response in one transaction.
 - Outbound delivery claims `notification_outbox` rows with `FOR UPDATE SKIP
 LOCKED`, a claim token, and an expiring lease. Provider HTTP requests have a
-  shorter deadline than the lease, and rejected completion tokens are surfaced
-  as unconfirmed. Provider failures are reduced to safe retry classes.
+  shorter deadline than the lease, the sequential batch is capped at three,
+  and rejected completion tokens are surfaced as unconfirmed. Provider
+  failures are reduced to safe retry classes.
   Credentials, raw signatures, phone numbers, message bodies, and provider
   error bodies are never logged.
+- PII-free operational events include only fixed outcome codes, provider name,
+  and aggregate delivery counts. Phone numbers, bodies, signatures, raw errors,
+  and credentials are excluded.
 - The worker guard rejects Unicode and multi-segment normal templates. The
   provider network boundary cannot be perfectly exactly-once: a process crash
   after send acceptance and before the SENT commit can be retried after lease

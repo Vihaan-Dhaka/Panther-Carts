@@ -227,48 +227,30 @@ describeDb("Ticket 5 forced SMS concurrency", () => {
     );
     const outboxId = inserted.rows[0].id as string;
 
-    const gate = await pool.connect();
     const workerA = await pool.connect();
     const workerB = await pool.connect();
-    const gateA = 7_405_001;
-    const gateB = 7_405_002;
     try {
-      await gate.query("select pg_advisory_lock($1), pg_advisory_lock($2)", [
-        gateA,
-        gateB,
-      ]);
-
-      const runWorker = async (
-        client: PoolClient,
-        gateKey: number,
-        label: string,
-      ) => {
-        await client.query("begin");
-        await client.query("select pg_advisory_xact_lock($1)", [gateKey]);
-        const claimed = await client.query(
-          `select * from public.claim_notification_outbox($1,10,120,5)`,
-          [label],
-        );
-        await client.query("commit");
-        return claimed.rows as Array<{ id: string }>;
-      };
-
-      const claimA = runWorker(workerA, gateA, "worker-a");
-      const claimB = runWorker(workerB, gateB, "worker-b");
-      expect(await isStillPending(claimA)).toBe(true);
-      expect(await isStillPending(claimB)).toBe(true);
-
-      await gate.query(
-        "select pg_advisory_unlock($1), pg_advisory_unlock($2)",
-        [gateA, gateB],
+      await workerA.query("begin");
+      const claimA = await workerA.query(
+        `select * from public.claim_notification_outbox('worker-a',10,120,5)`,
       );
-      const [rowsA, rowsB] = await Promise.all([claimA, claimB]);
-      const idsA = new Set(rowsA.map((row) => row.id));
-      const idsB = new Set(rowsB.map((row) => row.id));
-      expect([...idsA].filter((id) => idsB.has(id))).toEqual([]);
-      expect(
-        [...rowsA, ...rowsB].filter((row) => row.id === outboxId),
-      ).toHaveLength(1);
+      expect(claimA.rows.map((row) => row.id)).toContain(outboxId);
+
+      // Keep A's row lock and transaction open while B executes the same
+      // claim query. B must skip the locked row rather than wait or claim it.
+      await workerB.query("begin");
+      const claimB = await workerB.query(
+        `select * from public.claim_notification_outbox('worker-b',10,120,5)`,
+      );
+      expect(claimB.rows.map((row) => row.id)).not.toContain(outboxId);
+
+      await workerB.query("commit");
+      await workerA.query("commit");
+      const final = await pool.query(
+        `select attempts, status::text from public.notification_outbox where id=$1`,
+        [outboxId],
+      );
+      expect(final.rows[0]).toEqual({ attempts: 1, status: "PROCESSING" });
     } finally {
       for (const client of [workerA, workerB]) {
         try {
@@ -278,15 +260,6 @@ describeDb("Ticket 5 forced SMS concurrency", () => {
         }
         client.release();
       }
-      try {
-        await gate.query(
-          "select pg_advisory_unlock($1), pg_advisory_unlock($2)",
-          [gateA, gateB],
-        );
-      } catch {
-        // Locks may already be released.
-      }
-      gate.release();
     }
   });
 });

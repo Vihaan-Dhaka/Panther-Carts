@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { drainSmsOutbox } from "@/lib/sms/outbox";
 import { createSmsProvider } from "@/lib/sms/provider";
+import { recordSmsOperationalEvent } from "@/lib/sms/telemetry";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   outboxAuthorizationHeaderSchema,
@@ -34,8 +35,12 @@ export async function POST(request: Request): Promise<Response> {
       createAdminClient(),
       createSmsProvider(),
     );
+    if (result.failed > 0 || result.unconfirmed > 0) {
+      recordSmsOperationalEvent("OUTBOX_REQUIRES_ATTENTION", result);
+    }
     return Response.json(result);
   } catch {
+    recordSmsOperationalEvent("OUTBOX_DRAIN_FAILED");
     return Response.json({ error: "Outbox delivery failed" }, { status: 500 });
   }
 }

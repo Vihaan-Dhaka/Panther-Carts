@@ -4,6 +4,7 @@ import { POST as receiveTelnyx } from "@/app/api/sms/telnyx/route";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("SMS route safety", () => {
@@ -19,6 +20,7 @@ describe("SMS route safety", () => {
   });
 
   it("returns a body-free 403 for an unsigned selected-provider webhook", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubEnv("SMS_PROVIDER", "telnyx");
     vi.stubEnv("SMS_FROM_NUMBER", "+14045550100");
     vi.stubEnv("TELNYX_API_KEY", "key");
@@ -31,5 +33,13 @@ describe("SMS route safety", () => {
     );
     expect(response.status).toBe(403);
     expect(await response.text()).toBe("");
+    expect(warning).toHaveBeenCalledWith(
+      JSON.stringify({
+        component: "panther-carts-sms",
+        event: "WEBHOOK_REJECTED",
+        provider: "telnyx",
+        outcome: "INVALID_SIGNATURE",
+      }),
+    );
   });
 });

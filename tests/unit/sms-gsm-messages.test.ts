@@ -1,17 +1,7 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { analyzeSmsSegments } from "@/lib/sms/gsm";
-import {
-  AMBIGUOUS_ENTRY_MESSAGE,
-  CHECKED_OUT_CANCEL_MESSAGE,
-  NO_ACTIVE_ENTRY_MESSAGE,
-  UNKNOWN_COMMAND_MESSAGE,
-  holdConfirmationMessage,
-  readyMessage,
-  signupWaitingMessage,
-  timeReadyMessage,
-  timeRentalMessage,
-  timeWaitingMessage,
-} from "@/lib/sms/messages";
 
 describe("GSM-7 analyzer", () => {
   it("counts extension-table characters as two septets", () => {
@@ -39,23 +29,23 @@ describe("GSM-7 analyzer", () => {
   });
 });
 
-describe("normal Panther Carts templates", () => {
-  it("keeps every boundary-value template in one GSM-7 segment", () => {
-    const messages = [
-      signupWaitingMessage(999999, 999999),
-      signupWaitingMessage(999999, null),
-      readyMessage("9999", 240),
-      holdConfirmationMessage(999999),
-      timeWaitingMessage(999999, 999999),
-      timeWaitingMessage(999999, null),
-      timeReadyMessage("9999", 240),
-      timeRentalMessage("999999", 1440),
-      timeRentalMessage("999999", -999999),
-      UNKNOWN_COMMAND_MESSAGE,
-      NO_ACTIVE_ENTRY_MESSAGE,
-      AMBIGUOUS_ENTRY_MESSAGE,
-      CHECKED_OUT_CANCEL_MESSAGE,
+describe("authoritative SQL message literals", () => {
+  it("keeps every Panther Carts SQL literal in one GSM-7 segment", () => {
+    const migrationFiles = [
+      "../../supabase/migrations/20260811120000_admin_dashboard.sql",
+      "../../supabase/migrations/20260812120000_two_way_sms.sql",
     ];
+    const messages = migrationFiles.flatMap((relativePath) => {
+      const source = readFileSync(
+        fileURLToPath(new URL(relativePath, import.meta.url)),
+        "utf8",
+      );
+      return [...source.matchAll(/'(Panther Carts:[^']+)'/g)].map(
+        (match) => match[1],
+      );
+    });
+
+    expect(messages.length).toBeGreaterThan(15);
     for (const message of messages) {
       expect(analyzeSmsSegments(message), message).toMatchObject({
         encoding: "GSM-7",

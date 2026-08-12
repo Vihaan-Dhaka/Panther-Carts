@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { SmsProviderError } from "@/lib/sms/errors";
-import { drainSmsOutbox, OUTBOX_LEASE_SECONDS } from "@/lib/sms/outbox";
+import {
+  drainSmsOutbox,
+  MAX_OUTBOX_BATCH_SIZE,
+  OUTBOX_LEASE_SAFETY_MS,
+  OUTBOX_LEASE_SECONDS,
+} from "@/lib/sms/outbox";
 import {
   SMS_PROVIDER_REQUEST_TIMEOUT_MS,
   type SmsProvider,
@@ -34,9 +39,20 @@ function provider(send: SmsProvider["send"]): SmsProvider {
 }
 
 describe("SMS outbox worker", () => {
-  it("bounds provider requests comfortably inside the outbox lease", () => {
-    expect(SMS_PROVIDER_REQUEST_TIMEOUT_MS).toBeLessThan(
-      OUTBOX_LEASE_SECONDS * 1_000,
+  it("bounds the complete sequential batch comfortably inside the lease", () => {
+    expect(
+      MAX_OUTBOX_BATCH_SIZE * SMS_PROVIDER_REQUEST_TIMEOUT_MS +
+        OUTBOX_LEASE_SAFETY_MS,
+    ).toBeLessThanOrEqual(OUTBOX_LEASE_SECONDS * 1_000);
+    expect(MAX_OUTBOX_BATCH_SIZE).toBe(3);
+  });
+
+  it("caps a caller-requested batch at the lease-safe maximum", async () => {
+    const { client, rpc } = clientWith([]);
+    await drainSmsOutbox(client, provider(vi.fn()), { batchSize: 100 });
+    expect(rpc).toHaveBeenCalledWith(
+      "claim_notification_outbox",
+      expect.objectContaining({ p_limit: MAX_OUTBOX_BATCH_SIZE }),
     );
   });
 

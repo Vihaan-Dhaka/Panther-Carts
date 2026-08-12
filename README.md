@@ -109,12 +109,19 @@ Provider setup references:
   [webhook signatures](https://www.twilio.com/docs/usage/webhooks/webhooks-security),
   and [Advanced Opt-Out](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out)
 
-The outbox worker uses atomic claims, expiring leases, five bounded attempts,
-provider request deadlines shorter than the lease, and retry backoff. Schedule
-the authenticated POST at least once per minute; inbound webhooks only record
-the command and response intent and do not synchronously drain the outbox. A
-worker response with `unconfirmed` greater than zero requires operational
-attention and is never counted as sent. A rare duplicate remains possible if a
+The outbox worker uses atomic claims of at most three rows, expiring leases,
+five bounded attempts, 30-second provider request deadlines, and retry backoff.
+The complete worst-case sequential batch plus a safety margin fits inside its
+120-second lease. Schedule the authenticated POST at least once per minute;
+inbound webhooks only record the command and response intent and do not
+synchronously drain the outbox. PII-free structured operational events report
+webhook outcome codes and aggregate delivery counts. A worker response with
+`unconfirmed` greater than zero requires operational attention and is never
+counted as sent. A rare duplicate remains possible if a
 provider accepts a message and the worker crashes before the SENT state
 commits; no distributed system can make that network boundary perfectly
 exactly-once without provider idempotency.
+
+Until Ticket 6 adds rate limiting, UNKNOWN commands and messages from numbers
+without an active entry receive one safe response per provider event. Operators
+should monitor that billable reply path for abuse.

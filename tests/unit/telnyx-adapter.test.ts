@@ -147,6 +147,25 @@ describe("Telnyx adapter", () => {
     });
   });
 
+  it("accepts explicit null text and autoresponse fields", async () => {
+    const signed = webhook({ text: null, autoresponse_type: null });
+    const request = new Request("https://example.com/api/sms/telnyx", {
+      method: "POST",
+      headers: {
+        "telnyx-signature-ed25519": signed.signature,
+        "telnyx-timestamp": signed.timestamp,
+      },
+      body: signed.body,
+    });
+
+    await expect(
+      provider().parseInboundWebhook(request),
+    ).resolves.toMatchObject({
+      body: "",
+      compliance: null,
+    });
+  });
+
   it.each(["missing", "invalid", "stale", "altered"])(
     "rejects %s signatures before parsing",
     async (scenario) => {

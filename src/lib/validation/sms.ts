@@ -27,9 +27,16 @@ export const telnyxWebhookSchema = z.object({
       id: z.string().min(1).max(200),
       from: z.object({ phone_number: e164Schema }),
       to: z.array(z.object({ phone_number: e164Schema })).min(1),
-      text: z.string().max(1_600).default(""),
+      text: z
+        .string()
+        .max(1_600)
+        .nullish()
+        .transform((value) => value ?? ""),
       received_at: z.string().datetime({ offset: true }).optional(),
-      autoresponse_type: z.enum(["STOP", "START", "HELP"]).optional(),
+      autoresponse_type: z
+        .enum(["STOP", "START", "HELP"])
+        .nullish()
+        .transform((value) => value ?? undefined),
     }),
   }),
 });
@@ -47,7 +54,12 @@ export const twilioInboundSchema = z.object({
   From: e164Schema,
   To: e164Schema,
   Body: z.string().max(1_600).default(""),
-  OptOutType: z.enum(["STOP", "START", "HELP"]).optional(),
+  OptOutType: z
+    .preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.enum(["STOP", "START", "HELP"]).nullish(),
+    )
+    .transform((value) => value ?? undefined),
   DateCreated: z.string().optional(),
 });
 

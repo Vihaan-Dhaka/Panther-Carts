@@ -30,6 +30,8 @@ export async function createMigratedDb(
       create role service_role nologin;
       create role anon nologin;
       create role authenticated nologin;
+      alter default privileges in schema public
+        grant execute on functions to anon, authenticated;
     `);
   }
   const files = readdirSync(MIGRATIONS_DIR)

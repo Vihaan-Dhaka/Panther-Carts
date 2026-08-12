@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { SmsProviderError } from "./errors";
 import { assertSingleGsm7Segment } from "./gsm";
-import type { SmsProvider } from "./types";
+import { SMS_PROVIDER_REQUEST_TIMEOUT_MS, type SmsProvider } from "./types";
 import {
   claimedOutboxRowSchema,
   outboxCompletionSchema,
@@ -14,8 +14,16 @@ import { z } from "zod";
 export type OutboxDatabaseClient = Pick<SupabaseClient, "rpc">;
 
 const MAX_ATTEMPTS = 5;
-const DEFAULT_BATCH_SIZE = 20;
 export const OUTBOX_LEASE_SECONDS = 120;
+export const OUTBOX_LEASE_SAFETY_MS = 15_000;
+export const MAX_OUTBOX_BATCH_SIZE = Math.max(
+  1,
+  Math.floor(
+    (OUTBOX_LEASE_SECONDS * 1_000 - OUTBOX_LEASE_SAFETY_MS) /
+      SMS_PROVIDER_REQUEST_TIMEOUT_MS,
+  ),
+);
+const DEFAULT_BATCH_SIZE = MAX_OUTBOX_BATCH_SIZE;
 
 export type OutboxDrainResult = {
   claimed: number;
@@ -64,7 +72,7 @@ export async function drainSmsOutbox(
   options: { batchSize?: number } = {},
 ): Promise<OutboxDrainResult> {
   const batchSize = Math.min(
-    100,
+    MAX_OUTBOX_BATCH_SIZE,
     Math.max(1, Math.floor(options.batchSize ?? DEFAULT_BATCH_SIZE)),
   );
   const { data, error } = await client.rpc("claim_notification_outbox", {
