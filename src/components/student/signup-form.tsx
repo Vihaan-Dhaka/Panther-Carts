@@ -11,7 +11,13 @@ type SignupAction = (
 
 const initialStudentSignupState: StudentSignupState = {
   status: "idle",
-  values: { fullName: "", pantherId: "", email: "", phone: "" },
+  values: {
+    fullName: "",
+    pantherId: "",
+    email: "",
+    phone: "",
+    smsConsent: false,
+  },
   fieldErrors: {},
   formError: null,
 };
@@ -108,6 +114,40 @@ export function StudentSignupForm({ action }: { action: SignupAction }) {
           </div>
         );
       })}
+
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div className="flex items-start gap-3">
+          <input
+            id="smsConsent"
+            name="smsConsent"
+            type="checkbox"
+            required
+            defaultChecked={state.values.smsConsent}
+            aria-invalid={state.fieldErrors.smsConsent ? true : undefined}
+            aria-describedby={
+              state.fieldErrors.smsConsent
+                ? "smsConsent-description smsConsent-error"
+                : "smsConsent-description"
+            }
+            className="mt-1 h-5 w-5 shrink-0 rounded border-slate-400 text-sky-700 focus:ring-sky-600"
+          />
+          <label
+            htmlFor="smsConsent"
+            id="smsConsent-description"
+            className="text-sm leading-6 text-slate-700"
+          >
+            I agree to receive Panther Carts transactional cart-rental text
+            messages. Message frequency varies. Message and data rates may
+            apply. Reply STOP to opt out or HELP for carrier help. Consent is
+            not for marketing.
+          </label>
+        </div>
+        {state.fieldErrors.smsConsent?.[0] ? (
+          <p id="smsConsent-error" className="mt-2 text-sm text-red-700">
+            {state.fieldErrors.smsConsent[0]}
+          </p>
+        ) : null}
+      </div>
 
       <button
         type="submit"

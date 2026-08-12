@@ -26,6 +26,7 @@ describe("hosted Supabase Data API grants", () => {
     expect(result.rows.map((row) => row.table_name)).toEqual([
       "audit_events",
       "bins",
+      "inbound_sms_events",
       "notification_outbox",
       "queue_entries",
       "rentals",

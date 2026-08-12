@@ -47,6 +47,14 @@ export const joinQueueSchema = z
         .max(320, "Email must be 320 characters or fewer"),
     ),
     phone: formString(z.string().trim().min(1, "Phone number is required")),
+    smsConsent: z
+      .preprocess(
+        (value) => (value === "on" || value === true ? true : false),
+        z.literal(true, {
+          error: "Agree to transactional SMS messages to join the queue",
+        }),
+      )
+      .transform(() => true as const),
   })
   .transform((value) => ({
     ...value,

@@ -545,7 +545,7 @@ describe("admin dashboard data layer", () => {
     });
     expect(result).toEqual({
       status: "success",
-      message: "Rental-time notification queued for Ticket 5 delivery.",
+      message: "Rental-time notification queued for SMS delivery.",
       idempotentReplay: false,
     });
     expect(JSON.stringify(result)).not.toMatch(/outbox_id|body|provider/i);

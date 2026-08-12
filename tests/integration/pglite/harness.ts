@@ -109,7 +109,7 @@ export async function joinQueue(
   const unique = String(counter).padStart(10, "5");
   const phone = overrides.phone ?? `+1${unique}`;
   const res = await db.query<{ r: JoinRpcResult }>(
-    `select public.join_queue($1, $2, $3, $4, $5) as r`,
+    `select public.join_queue($1, $2, $3, $4, $5, true) as r`,
     [
       sessionId,
       `Student ${counter}`,

@@ -220,7 +220,7 @@ describeDb("concurrent duplicate prevention", () => {
     expect(await countActiveReservations(sessionId)).toBe(1);
     expect((await getEntry(pool, b.queueEntryId)).status).toBe("READY");
     // B was offered the bin exactly once.
-    expect(await countOutbox(sessionId, "READY")).toBe(2); // A's original + B's
+    expect(await countOutbox(sessionId, "READY")).toBe(1); // B's later offer
   });
 });
 

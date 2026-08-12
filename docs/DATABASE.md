@@ -14,6 +14,8 @@ Migrations:
   Data API privileges without browser-role exposure.
 - `20260811120000_admin_dashboard.sql` — Ticket 4 session lifecycle, bulk-bin,
   and manual-notification RPC functions.
+- `20260812120000_two_way_sms.sql` — Ticket 5 consent evidence, corrected
+  notifications, inbound idempotency/dispatch, cancellation, and outbox leases.
 
 ## Tables
 
@@ -22,8 +24,9 @@ Migrations:
   timestamps, and the optional request key/fingerprint used to make Ticket 4
   session creation retry-safe. Durations are constrained `> 0`.
 - **`students`** — signup records (name, Panther ID, email, normalized phone)
-  scoped to a session. Indexed by session, `(session, phone)`, and
-  `(session, panther_id)`.
+  scoped to a session. Minimal SMS opt-in evidence is consent time plus the
+  disclosure version; no marketing preference is stored. Indexed by session,
+  `(session, phone)`, and `(session, panther_id)`.
 - **`bins`** — numbered cart bins. `bin_number` is text and unique per session.
   Status `AVAILABLE` / `RESERVED` / `OUT`. No condition or QR columns.
 - **`queue_entries`** — the waitlist. Carries status, `queue_rank`, the
@@ -35,13 +38,20 @@ Migrations:
 - **`rentals`** — a checked-out cart. Status `OUT` / `RETURNED`. Records due
   time, PantherCard collect/return timestamps, staff labels, `was_late`, and
   checkout/return idempotency keys.
-- **`notification_outbox`** — outbound SMS intents. Ticket 1 only writes rows;
-  delivery is Ticket 5. `dedupe_key` is unique.
+- **`notification_outbox`** — provider-independent outbound SMS intents with a
+  canonical E.164 destination, unique deterministic `dedupe_key`, attempt
+  count, retry availability, claim token, and expiring processing lease.
+- **`inbound_sms_events`** — provider-scoped event/message identifiers,
+  non-PII command/outcome diagnostics, optional resolved session, and response
+  outbox link. Unique provider/event and provider/message constraints prevent
+  replayed webhooks from repeating mutations or responses. Message bodies and
+  phone numbers are not retained here.
 - **`audit_events`** — append-only audit log with JSON metadata.
 
 ### Personal data (deferred to Ticket 6)
 
-Student PII is stored in plain columns. **Column-level encryption, retention
+Student PII is stored in plain columns. SMS consent evidence is limited to its
+timestamp and disclosure version. **Column-level encryption, retention
 windows, and the RLS policies that limit who may read this data are Ticket 6.**
 No real student data is seeded in this ticket.
 
@@ -143,8 +153,9 @@ rental/reservation impossible.
   `public.lock_idempotency_key('<operation>', key)`. Without it both callers
   pass the lookup and the loser surfaces a raw
   `duplicate key ... rentals_checkout_idem_uidx` error instead of a clean
-  `IDEMPOTENCY_CONFLICT`. Lock order is always **session, then key**, so the two
-  lock classes cannot deadlock.
+  `IDEMPOTENCY_CONFLICT`. Checkout, return, and admin operations use **session,
+  then request key**. Ticket 5 phone resolution uses **phone key, then session**;
+  signup uses the same order and no path takes those two locks in reverse.
 - **PantherCard confirmation** is checked with `is distinct from true`, so a
   NULL confirmation is rejected. (`not NULL` evaluates to NULL under SQL
   three-valued logic and would silently fall through.)
@@ -162,6 +173,41 @@ rental/reservation impossible.
   `MANUAL:<request-key>` outbox intent to exactly one session and active rental.
   A retry returns the original outbox row instead of enqueueing twice.
 
+- **inbound SMS**: `handle_inbound_sms` locks both provider event and provider
+  message identities. The event insert, phone/session resolution, queue
+  mutation, response outbox insert, and safe outcome record share one database
+  transaction. Compliance classifications record an acknowledgement only.
+- **CANCEL**: `cancel_queue_entry` is session-locked and idempotency-keyed.
+  WAITING cancellation reindexes ranks. READY cancellation releases the active
+  reservation and bin, then allocates to the next waiter in the same
+  transaction. CHECKED_OUT produces a safe rejection without changing the
+  rental or bin.
+
+## Ticket 5 outbox claim/lease
+
+`claim_notification_outbox` atomically selects eligible PENDING rows and
+expired PROCESSING leases with `FOR UPDATE SKIP LOCKED`, increments attempts,
+and writes a new claim token and bounded lease. Completion requires that exact
+token, so a recovered row rejects a stale worker's commit. Temporary failures
+return to PENDING with exponential backoff capped at one hour; permanent or
+maximum-attempt failures become FAILED. `last_error` stores only a bounded,
+sanitized error token.
+
+This prevents simultaneous healthy workers from sending the same claimed row.
+It cannot make the external provider boundary exactly-once: if the provider
+accepts a message and the process crashes before
+`complete_notification_outbox_sent` commits, lease recovery can send it again.
+Provider message IDs are stored only after acceptance.
+
+## Ticket 5 inbound session resolution
+
+The normalized sender is resolved only against WAITING, READY, or CHECKED_OUT
+entries in ACTIVE sessions. A phone-scoped advisory lock stabilizes resolution
+against concurrent signup, after which the selected session is locked and all
+preconditions are rechecked. No match gets a non-PII response. Multiple matches
+record `AMBIGUOUS_ACTIVE_MATCH`, perform no mutation, and never guess a session.
+Every row lookup and mutation retains an exact `session_id` predicate.
+
 ## Ticket 4 admin operations
 
 The Admin Dashboard resolves its current session in trusted server code and
@@ -177,7 +223,7 @@ scope under the session advisory lock:
   safely reports existing numbers.
 - `admin_notify_rental` enqueues a provider-independent `MANUAL` outbox intent
   for an active rental. PostgreSQL derives the remaining/overdue minutes from
-  database time. Sending that intent remains Ticket 5 work.
+  database time. Ticket 5 delivers that intent through the leased SMS outbox.
 
 All six reporting views are queried with an explicit `session_id` equality
 constraint and paginated with stable ordering. DTO projection removes internal

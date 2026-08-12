@@ -1,6 +1,9 @@
 # SMS module
 
-Provider-independent SMS layer. `types.ts` defines the `SmsProvider`
-contract; Telnyx and Twilio adapters will implement it in Ticket 5. No
-provider SDK is integrated yet. Application code must depend only on the
-interface, never on a concrete provider.
+Provider-independent SMS contracts, templates, inbound dispatch, and outbox
+delivery live here. `telnyx.ts` and `twilio.ts` contain all provider-specific
+HTTP/signature behavior; application code depends only on `SmsProvider`.
+
+Panther Carts commands are exactly TIME, HOLD, and CANCEL. HELP, STOP, and
+START/UNSTOP are carrier-managed compliance keywords and bypass queue dispatch.
+All files that touch provider configuration or database access are server-only.

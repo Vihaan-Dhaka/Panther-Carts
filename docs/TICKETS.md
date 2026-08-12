@@ -42,12 +42,19 @@ and staff link/code generation, bin management (individual, range, pasted
 list), and the seven dropdown-selected table views with the specified
 red/green/orange/grey/white status colors and per-rental Notify buttons.
 
-## Ticket 5: Two-way SMS
+## Ticket 5: Two-way SMS - **complete**
 
-Telnyx and Twilio adapters behind the `SmsProvider` interface. Outbound
-notifications (signup confirmation with position and estimated wait,
-reservation offers, Notify). Inbound webhook handling for TIME, HOLD,
-CANCEL, and HELP.
+Telnyx (recommended) and Twilio adapters behind the `SmsProvider` interface,
+selected explicitly without cross-provider failover. Signed inbound webhooks
+dispatch the exact Panther Carts commands `TIME`, `HOLD`, and `CANCEL` into
+authoritative PostgreSQL operations. HELP, STOP, and START/UNSTOP remain
+provider-managed compliance keywords and never enter the queue dispatcher.
+
+Ticket 5 also adds required transactional-SMS signup consent evidence, atomic
+idempotent cancellation, provider-scoped inbound replay protection, combined
+single-segment signup/pickup messages, GSM-7 analysis, and a leased,
+retry-bounded notification outbox worker. Manual provider setup must use a
+local 10DLC sender and Advanced Opt-Out with CANCEL removed from opt-out aliases.
 
 ## Ticket 6: Authentication and data protection
 

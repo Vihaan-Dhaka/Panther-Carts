@@ -121,18 +121,18 @@ describe("join + allocation", () => {
     expect(waitlist.map((w) => w.queue_rank)).toEqual([1, 2, 3]);
   });
 
-  it("deduplicates outbox rows by dedupe_key", async () => {
+  it("creates one combined immediate-signup message and deduplicates allocation", async () => {
     const s = await createSession(db);
     await addBins(db, s, ["1"]);
     await joinQueue(db, s);
     expect(
       await count(
         db,
-        `select count(*)::int c from public.notification_outbox where session_id=$1 and type='READY'`,
+        `select count(*)::int c from public.notification_outbox where session_id=$1 and type='INITIAL'`,
         [s],
       ),
     ).toBe(1);
-    // Re-running allocation must not create a second READY notification.
+    // Re-running allocation must not create a separate READY notification.
     await db.query(`select public.allocate_bins($1)`, [s]);
     expect(
       await count(
@@ -140,7 +140,7 @@ describe("join + allocation", () => {
         `select count(*)::int c from public.notification_outbox where session_id=$1 and type='READY'`,
         [s],
       ),
-    ).toBe(1);
+    ).toBe(0);
     expect(
       await count(
         db,
@@ -587,7 +587,7 @@ describe("join_queue validates format server-side (review finding 3)", () => {
     for (const email of ["x", "no-at-sign.example", "a@b", "a@b."]) {
       await expect(
         db.query(
-          `select public.join_queue($1,'Name','900',$2,'+15551110000')`,
+          `select public.join_queue($1,'Name','900',$2,'+15551110000',true)`,
           [s, email],
         ),
       ).rejects.toThrow(/INVALID_EMAIL/);
@@ -607,7 +607,7 @@ describe("join_queue validates format server-side (review finding 3)", () => {
     for (const phone of ["+1", "1", "555", "", "abc", "+1234567890123456789"]) {
       await expect(
         db.query(
-          `select public.join_queue($1,'Name','900','ok@example.edu',$2)`,
+          `select public.join_queue($1,'Name','900','ok@example.edu',$2,true)`,
           [s, phone],
         ),
       ).rejects.toThrow(/INVALID_PHONE|INVALID_STUDENT_INPUT/);
