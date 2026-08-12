@@ -10,6 +10,7 @@ const authToken = "auth-token";
 
 function provider(
   fetchImpl: typeof fetch = vi.fn() as unknown as typeof fetch,
+  requestTimeoutMs?: number,
 ) {
   return new TwilioSmsProvider(
     {
@@ -19,7 +20,11 @@ function provider(
       fromNumber: "+14045550100",
       webhookUrl,
     },
-    { fetch: fetchImpl, now: () => new Date("2026-08-11T20:00:00Z") },
+    {
+      fetch: fetchImpl,
+      now: () => new Date("2026-08-11T20:00:00Z"),
+      requestTimeoutMs,
+    },
   );
 }
 
@@ -47,6 +52,37 @@ function inboundRequest(
 }
 
 describe("Twilio adapter", () => {
+  it("aborts a provider request at the configured deadline", async () => {
+    const fetchImpl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason),
+          );
+        }),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      provider(fetchImpl, 5).send({
+        from: "+14045550100",
+        to: "+14045550123",
+        body: "Panther Carts: Test",
+      }),
+    ).rejects.toMatchObject({ code: "NETWORK_ERROR", retryable: true });
+  });
+
+  it("canonicalizes repeated parameters like Twilio's reference validator", () => {
+    expect(
+      computeTwilioSignature(authToken, webhookUrl, {
+        Alpha: ["b", "a", "a"],
+      }),
+    ).toBe(
+      computeTwilioSignature(authToken, webhookUrl, {
+        Alpha: ["a", "b"],
+      }),
+    );
+  });
+
   it("sends form-encoded SMS through the fixed sender and Messaging Service", async () => {
     const fetchImpl = vi
       .fn()

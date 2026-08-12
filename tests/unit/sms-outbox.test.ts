@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { SmsProviderError } from "@/lib/sms/errors";
-import { drainSmsOutbox } from "@/lib/sms/outbox";
-import type { SmsProvider } from "@/lib/sms/types";
+import { drainSmsOutbox, OUTBOX_LEASE_SECONDS } from "@/lib/sms/outbox";
+import {
+  SMS_PROVIDER_REQUEST_TIMEOUT_MS,
+  type SmsProvider,
+} from "@/lib/sms/types";
 
 const row = {
   id: "9ce0f6b4-63b0-48b0-bb5b-0fe117e640a9",
@@ -31,6 +34,12 @@ function provider(send: SmsProvider["send"]): SmsProvider {
 }
 
 describe("SMS outbox worker", () => {
+  it("bounds provider requests comfortably inside the outbox lease", () => {
+    expect(SMS_PROVIDER_REQUEST_TIMEOUT_MS).toBeLessThan(
+      OUTBOX_LEASE_SECONDS * 1_000,
+    );
+  });
+
   it("sends a claimed row and records only the provider message ID", async () => {
     const { client, rpc } = clientWith();
     const send = vi.fn().mockResolvedValue({ providerMessageId: "message-1" });
@@ -39,6 +48,7 @@ describe("SMS outbox worker", () => {
       sent: 1,
       retried: 0,
       failed: 0,
+      unconfirmed: 0,
     });
     expect(send).toHaveBeenCalledWith({
       from: "+14045550100",
@@ -49,6 +59,58 @@ describe("SMS outbox worker", () => {
       p_outbox_id: row.id,
       p_claim_token: row.claim_token,
       p_provider_message_id: "message-1",
+    });
+  });
+
+  it("does not report sent when provider acceptance cannot commit under the claim", async () => {
+    const { client, rpc } = clientWith();
+    rpc.mockImplementation(async (name: string) => {
+      if (name === "claim_notification_outbox") {
+        return { data: [row], error: null };
+      }
+      if (name === "complete_notification_outbox_sent") {
+        return { data: false, error: null };
+      }
+      return { data: true, error: null };
+    });
+    const send = vi.fn().mockResolvedValue({ providerMessageId: "message-1" });
+
+    await expect(drainSmsOutbox(client, provider(send))).resolves.toEqual({
+      claimed: 1,
+      sent: 0,
+      retried: 0,
+      failed: 0,
+      unconfirmed: 1,
+    });
+    expect(rpc).not.toHaveBeenCalledWith(
+      "complete_notification_outbox_failure",
+      expect.anything(),
+    );
+  });
+
+  it("surfaces a rejected failure completion instead of claiming a retry", async () => {
+    const { client, rpc } = clientWith();
+    rpc.mockImplementation(async (name: string) => {
+      if (name === "claim_notification_outbox") {
+        return { data: [row], error: null };
+      }
+      return { data: false, error: null };
+    });
+
+    await expect(
+      drainSmsOutbox(
+        client,
+        provider(
+          vi
+            .fn()
+            .mockRejectedValue(new SmsProviderError("NETWORK_ERROR", true)),
+        ),
+      ),
+    ).resolves.toMatchObject({
+      sent: 0,
+      retried: 0,
+      failed: 0,
+      unconfirmed: 1,
     });
   });
 
@@ -94,7 +156,10 @@ describe("SMS outbox worker", () => {
     expect(send).not.toHaveBeenCalled();
     expect(rpc).toHaveBeenCalledWith(
       "complete_notification_outbox_failure",
-      expect.objectContaining({ p_retryable: false }),
+      expect.objectContaining({
+        p_retryable: false,
+        p_error: "INVALID_MESSAGE_TEMPLATE",
+      }),
     );
   });
 });

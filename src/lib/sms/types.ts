@@ -1,6 +1,9 @@
 export const SMS_PROVIDERS = ["telnyx", "twilio"] as const;
 export type SmsProviderName = (typeof SMS_PROVIDERS)[number];
 
+/** Keep provider calls comfortably inside the database outbox lease. */
+export const SMS_PROVIDER_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface OutboundSms {
   /** E.164 sender and destination numbers. */
   from: string;

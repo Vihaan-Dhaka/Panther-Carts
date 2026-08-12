@@ -191,13 +191,19 @@ and writes a new claim token and bounded lease. Completion requires that exact
 token, so a recovered row rejects a stale worker's commit. Temporary failures
 return to PENDING with exponential backoff capped at one hour; permanent or
 maximum-attempt failures become FAILED. `last_error` stores only a bounded,
-sanitized error token.
+sanitized error token. An expired final-attempt PROCESSING lease records
+`DELIVERY_OUTCOME_UNKNOWN_AFTER_FINAL_LEASE`, because provider acceptance may
+have happened even though the database claim was never completed. If provider
+acceptance is known but the claim token is stale, the row preserves the first
+unconfirmed provider message ID and detection timestamp without overwriting the
+current owner's delivery state.
 
 This prevents simultaneous healthy workers from sending the same claimed row.
 It cannot make the external provider boundary exactly-once: if the provider
 accepts a message and the process crashes before
 `complete_notification_outbox_sent` commits, lease recovery can send it again.
 Provider message IDs are stored only after acceptance.
+The worker treats a false completion result as unconfirmed, never as SENT.
 
 ## Ticket 5 inbound session resolution
 

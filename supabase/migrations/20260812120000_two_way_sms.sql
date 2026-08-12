@@ -24,6 +24,8 @@ alter table public.notification_outbox
   add column claimed_at timestamptz,
   add column lease_expires_at timestamptz,
   add column claim_token uuid,
+  add column unconfirmed_provider_message_id text,
+  add column delivery_outcome_unknown_at timestamptz,
   add constraint notification_outbox_attempts_nonnegative check (attempts >= 0),
   add constraint notification_outbox_destination_valid check (
     destination_phone is null or public.is_valid_phone(destination_phone)
@@ -34,6 +36,18 @@ alter table public.notification_outbox
       claimed_at is not null
       and lease_expires_at is not null
       and claim_token is not null
+    )
+  ),
+  add constraint notification_outbox_unknown_delivery_evidence check (
+    (
+      unconfirmed_provider_message_id is null
+      and delivery_outcome_unknown_at is null
+    )
+    or (
+      unconfirmed_provider_message_id is not null
+      and btrim(unconfirmed_provider_message_id) <> ''
+      and char_length(unconfirmed_provider_message_id) <= 200
+      and delivery_outcome_unknown_at is not null
     )
   );
 
@@ -62,6 +76,10 @@ security definer
 set search_path = ''
 as $$
 begin
+  if new.type = 'MANUAL'
+     and right(new.body, 13) <> 'STOP=opt out.' then
+    new.body := new.body || ' STOP=opt out.';
+  end if;
   if new.destination_phone is null and new.student_id is not null then
     select s.phone into new.destination_phone
     from public.students s
@@ -724,12 +742,16 @@ begin
   -- Telnyx autoresponse_type or Twilio OptOutType means the provider has
   -- already handled and replied. Never mutate the queue or send a duplicate.
   if p_compliance is not null then
+    v_outcome := case
+      when p_command = 'UNKNOWN' then 'COMPLIANCE_ACKNOWLEDGED'
+      else 'COMPLIANCE_OVERRODE_COMMAND'
+    end;
     update public.inbound_sms_events
-    set outcome = 'COMPLIANCE_ACKNOWLEDGED', processed_at = now()
+    set outcome = v_outcome, processed_at = now()
     where id = v_event.id;
     return jsonb_build_object(
       'duplicate', false,
-      'outcome', 'COMPLIANCE_ACKNOWLEDGED',
+      'outcome', v_outcome,
       'response_outbox_id', null
     );
   end if;
@@ -915,14 +937,38 @@ begin
         ) returning * into v_outbox;
       end if;
     else
-      v_cancel := public.cancel_queue_entry(
-        v_entry.session_id,
-        v_entry.id,
-        p_provider || ':' || p_provider_event_id
-      );
-      v_outcome := v_cancel->>'outcome';
-      select * into v_outbox from public.notification_outbox
-      where id = (v_cancel->>'outbox_id')::uuid;
+      begin
+        v_cancel := public.cancel_queue_entry(
+          v_entry.session_id,
+          v_entry.id,
+          p_provider || ':' || p_provider_event_id
+        );
+        v_outcome := v_cancel->>'outcome';
+        select * into v_outbox from public.notification_outbox
+        where id = (v_cancel->>'outbox_id')::uuid;
+      exception when others then
+        get stacked diagnostics v_error = message_text;
+        if position('PANTHER_CARTS:RESERVATION_NOT_ACTIVE' in v_error) > 0
+           or position('PANTHER_CARTS:NO_ACTIVE_RENTAL' in v_error) > 0
+           or position('PANTHER_CARTS:ENTRY_NOT_ACTIVE' in v_error) > 0 then
+          v_body := 'Panther Carts: That queue or rental state is no longer active. Reply TIME for status. STOP=opt out.';
+          v_outcome := 'CANCEL_NOT_ACTIVE';
+        elsif position('PANTHER_CARTS:IDEMPOTENCY_CONFLICT' in v_error) > 0 then
+          v_body := 'Panther Carts: CANCEL could not be applied safely. Reply TIME for status or contact staff. STOP=opt out.';
+          v_outcome := 'CANCEL_UNAVAILABLE';
+        else
+          raise;
+        end if;
+      end;
+      if v_outbox.id is null then
+        insert into public.notification_outbox (
+          session_id, student_id, type, body, dedupe_key, destination_phone
+        ) values (
+          v_entry.session_id, v_entry.student_id, 'CANCEL', v_body,
+          'CANCEL_RESPONSE:' || p_provider || ':' || p_provider_event_id,
+          v_entry.phone
+        ) returning * into v_outbox;
+      end if;
     end if;
   end if;
 
@@ -973,7 +1019,11 @@ begin
 
   update public.notification_outbox o
   set status = 'FAILED',
-      last_error = coalesce(o.last_error, 'MAX_ATTEMPTS_REACHED'),
+      last_error = case
+        when o.status = 'PROCESSING'
+          then 'DELIVERY_OUTCOME_UNKNOWN_AFTER_FINAL_LEASE'
+        else coalesce(o.last_error, 'MAX_ATTEMPTS_REACHED')
+      end,
       claimed_at = null,
       lease_expires_at = null,
       claim_token = null
@@ -1034,7 +1084,23 @@ begin
       claim_token = null, last_error = null
   where id = p_outbox_id and status = 'PROCESSING'
     and claim_token = p_claim_token;
-  return found;
+  if found then return true; end if;
+
+  -- Provider acceptance happened, but this token no longer owns the row.
+  -- Preserve forensic evidence without changing the current owner's state.
+  update public.notification_outbox
+  set unconfirmed_provider_message_id = coalesce(
+        unconfirmed_provider_message_id, p_provider_message_id
+      ),
+      delivery_outcome_unknown_at = coalesce(
+        delivery_outcome_unknown_at, now()
+      ),
+      last_error = case
+        when status = 'SENT' then last_error
+        else 'DELIVERY_ACCEPTED_FOR_STALE_CLAIM'
+      end
+  where id = p_outbox_id;
+  return false;
 end;
 $$;
 
@@ -1091,6 +1157,7 @@ $$;
 -- ---------------------------------------------------------------------------
 
 revoke all on public.inbound_sms_events from public;
+revoke execute on all functions in schema public from public;
 
 do $$
 declare

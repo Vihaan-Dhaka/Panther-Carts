@@ -38,7 +38,9 @@ admin.
 - Panther Carts application commands are exactly `TIME`, `HOLD`, and `CANCEL`.
   `HELP`, `STOP`, and `START`/`UNSTOP` are provider-managed compliance keywords,
   never queue commands. A forwarded compliance webhook is acknowledged without
-  a queue mutation or a duplicate application response.
+  a queue mutation or a duplicate application response. If a provider labels
+  an application command as compliance, the event records a distinct
+  misconfiguration outcome without executing that command.
 - `CANCEL` leaves the Panther Carts queue/reservation. It is not carrier opt-out.
 - All normal Panther Carts messages fit in one GSM-7 SMS segment.
 - Students do not create accounts.
@@ -81,9 +83,11 @@ admin.
   identifiers are provider-scoped and idempotent.
 - Outbound messages use a database-backed claim/lease outbox with bounded
   attempts and retry backoff. Simultaneous healthy workers cannot claim the
-  same row. A crash after provider acceptance but before the SENT commit can
-  still cause a duplicate on lease recovery; the system does not claim perfect
-  exactly-once delivery across that network boundary.
+  same row. Provider requests time out before the lease expires, and a rejected
+  completion is reported as unconfirmed rather than sent. A crash after
+  provider acceptance but before the SENT commit can still cause a duplicate
+  on lease recovery; the system does not claim perfect exactly-once delivery
+  across that network boundary.
 
 ## Staff interface
 

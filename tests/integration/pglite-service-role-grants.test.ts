@@ -37,6 +37,32 @@ describe("hosted Supabase Data API grants", () => {
     expect(result.rows.every((row) => row.has_access)).toBe(true);
   });
 
+  it("denies browser roles EXECUTE on every public function", async () => {
+    const result = await db.query<{
+      function_name: string;
+      anon_can_execute: boolean;
+      authenticated_can_execute: boolean;
+    }>(
+      `select p.oid::regprocedure::text as function_name,
+              has_function_privilege('anon', p.oid, 'EXECUTE')
+                as anon_can_execute,
+              has_function_privilege('authenticated', p.oid, 'EXECUTE')
+                as authenticated_can_execute
+         from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.prokind = 'f'
+        order by p.oid::regprocedure::text`,
+    );
+
+    expect(result.rows.length).toBeGreaterThan(0);
+    expect(
+      result.rows.filter(
+        (row) => row.anon_can_execute || row.authenticated_can_execute,
+      ),
+    ).toEqual([]);
+  });
+
   it("applies the same least-privilege defaults to future tables", async () => {
     await db.exec(`
       create table public.service_role_grant_probe (

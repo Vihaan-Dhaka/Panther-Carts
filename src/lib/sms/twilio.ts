@@ -2,7 +2,12 @@ import "server-only";
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { SmsProviderError, SmsWebhookError } from "./errors";
-import type { InboundSms, OutboundSms, SmsProvider } from "./types";
+import {
+  SMS_PROVIDER_REQUEST_TIMEOUT_MS,
+  type InboundSms,
+  type OutboundSms,
+  type SmsProvider,
+} from "./types";
 import {
   outboundSmsSchema,
   twilioErrorResponseSchema,
@@ -21,6 +26,7 @@ export type TwilioConfig = {
 type TwilioDependencies = {
   fetch?: typeof fetch;
   now?: () => Date;
+  requestTimeoutMs?: number;
 };
 
 type TwilioParameters = Record<string, string | string[]>;
@@ -39,7 +45,7 @@ export function computeTwilioSignature(
   let payload = exactUrl;
   for (const key of Object.keys(parameters).sort()) {
     const value = parameters[key];
-    const values = Array.isArray(value) ? [...value].sort() : [value];
+    const values = Array.isArray(value) ? [...new Set(value)].sort() : [value];
     for (const item of values) payload += `${key}${item}`;
   }
   return createHmac("sha1", authToken).update(payload, "utf8").digest("base64");
@@ -94,6 +100,7 @@ export class TwilioSmsProvider implements SmsProvider {
   readonly sender: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
+  private readonly requestTimeoutMs: number;
 
   constructor(
     private readonly config: TwilioConfig,
@@ -102,6 +109,8 @@ export class TwilioSmsProvider implements SmsProvider {
     this.sender = config.fromNumber;
     this.fetchImpl = dependencies.fetch ?? fetch;
     this.now = dependencies.now ?? (() => new Date());
+    this.requestTimeoutMs =
+      dependencies.requestTimeoutMs ?? SMS_PROVIDER_REQUEST_TIMEOUT_MS;
   }
 
   async send(message: OutboundSms) {
@@ -128,6 +137,7 @@ export class TwilioSmsProvider implements SmsProvider {
             "content-type": "application/x-www-form-urlencoded",
           },
           body: form.toString(),
+          signal: AbortSignal.timeout(this.requestTimeoutMs),
         },
       );
     } catch {

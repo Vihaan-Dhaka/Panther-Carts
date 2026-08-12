@@ -299,6 +299,44 @@ describe("inbound command resolution and replay", () => {
     },
   );
 
+  it("records a compliance classification that overrides CANCEL without mutating", async () => {
+    const phone = "+14045550125";
+    const sessionId = await createSession(db);
+    const entry = await joinQueue(db, sessionId, { phone });
+    const before = await count(
+      db,
+      `select count(*)::int c from public.notification_outbox where session_id=$1`,
+      [sessionId],
+    );
+
+    const result = await inbound({
+      from: phone,
+      command: "CANCEL",
+      compliance: "STOP",
+    });
+
+    expect(result).toMatchObject({
+      outcome: "COMPLIANCE_OVERRODE_COMMAND",
+      response_outbox_id: null,
+    });
+    expect((await getEntry(db, entry.queueEntryId)).status).toBe("WAITING");
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.notification_outbox where session_id=$1`,
+        [sessionId],
+      ),
+    ).toBe(before);
+    const event = await db.query<{ outcome: string; command: string }>(
+      `select outcome, command from public.inbound_sms_events
+       where outcome='COMPLIANCE_OVERRODE_COMMAND'`,
+    );
+    expect(event.rows[0]).toEqual({
+      outcome: "COMPLIANCE_OVERRODE_COMMAND",
+      command: "CANCEL",
+    });
+  });
+
   it("returns safe unknown, no-match, and ambiguous responses without guessing", async () => {
     const unknown = await inbound({
       from: "+14045550991",
@@ -345,6 +383,43 @@ describe("inbound command resolution and replay", () => {
     const second = await inbound({ from: phone, command: "HOLD" });
     expect(second.outcome).toBe("HOLD_ALREADY_USED");
   });
+
+  it("persists a safe CANCEL reply when an active-looking reservation is stale", async () => {
+    const phone = "+14045550995";
+    const sessionId = await createSession(db);
+    await addBins(db, sessionId, ["1"]);
+    const entry = await joinQueue(db, sessionId, { phone });
+    await db.query(
+      `update public.reservations
+       set status='EXPIRED', ended_at=now()
+       where session_id=$1 and queue_entry_id=$2 and status='ACTIVE'`,
+      [sessionId, entry.queueEntryId],
+    );
+
+    const result = await inbound({ from: phone, command: "CANCEL" });
+
+    expect(result).toMatchObject({
+      duplicate: false,
+      outcome: "CANCEL_NOT_ACTIVE",
+    });
+    expect((await getEntry(db, entry.queueEntryId)).status).toBe("READY");
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.inbound_sms_events
+         where outcome='CANCEL_NOT_ACTIVE' and processed_at is not null`,
+        [],
+      ),
+    ).toBe(1);
+    expect(
+      await count(
+        db,
+        `select count(*)::int c from public.notification_outbox
+         where session_id=$1 and type='CANCEL'`,
+        [sessionId],
+      ),
+    ).toBe(1);
+  });
 });
 
 describe("outbox claim leases and retry states", () => {
@@ -386,6 +461,22 @@ describe("outbox claim leases and retry states", () => {
       [id, first.rows[0].claim_token],
     );
     expect(stale.rows[0].completed).toBe(false);
+    const evidence = await db.query<{
+      unconfirmed_provider_message_id: string | null;
+      delivery_outcome_unknown_at: string | null;
+      last_error: string | null;
+    }>(
+      `select unconfirmed_provider_message_id,
+              delivery_outcome_unknown_at,
+              last_error
+       from public.notification_outbox where id=$1`,
+      [id],
+    );
+    expect(evidence.rows[0]).toMatchObject({
+      unconfirmed_provider_message_id: "message",
+      last_error: "DELIVERY_ACCEPTED_FOR_STALE_CLAIM",
+    });
+    expect(evidence.rows[0].delivery_outcome_unknown_at).not.toBeNull();
   });
 
   it("backs off temporary failures, sanitizes permanent failures, and bounds attempts", async () => {
@@ -425,5 +516,30 @@ describe("outbox claim leases and retry states", () => {
       [id],
     );
     expect(final.rows[0].status).toBe("FAILED");
+  });
+
+  it("records an unknown delivery outcome when a final processing lease expires", async () => {
+    const id = await insertOutbox();
+    await db.query(
+      `update public.notification_outbox
+       set status='PROCESSING', attempts=5, claimed_at=now()-interval '3 minutes',
+           lease_expires_at=now()-interval '1 minute', claim_token=gen_random_uuid()
+       where id=$1`,
+      [id],
+    );
+
+    const claimed = await db.query(
+      `select * from public.claim_notification_outbox('worker-b',10,120,5)`,
+    );
+    expect(claimed.rows).toHaveLength(0);
+    const final = await db.query<{ status: string; last_error: string }>(
+      `select status::text, last_error
+       from public.notification_outbox where id=$1`,
+      [id],
+    );
+    expect(final.rows[0]).toEqual({
+      status: "FAILED",
+      last_error: "DELIVERY_OUTCOME_UNKNOWN_AFTER_FINAL_LEASE",
+    });
   });
 });

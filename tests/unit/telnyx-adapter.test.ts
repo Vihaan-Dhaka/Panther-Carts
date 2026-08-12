@@ -12,6 +12,7 @@ const rawPublicKey = (publicKey as KeyObject)
 
 function provider(
   fetchImpl: typeof fetch = vi.fn() as unknown as typeof fetch,
+  requestTimeoutMs?: number,
 ) {
   return new TelnyxSmsProvider(
     {
@@ -19,7 +20,7 @@ function provider(
       publicKey: rawPublicKey,
       fromNumber: "+14045550100",
     },
-    { fetch: fetchImpl, now: () => NOW },
+    { fetch: fetchImpl, now: () => NOW, requestTimeoutMs },
   );
 }
 
@@ -39,6 +40,7 @@ function webhook(bodyOverride: Record<string, unknown> = {}) {
       },
     },
   });
+
   const timestamp = String(Math.floor(NOW.getTime() / 1_000));
   const signature = sign(
     null,
@@ -49,6 +51,25 @@ function webhook(bodyOverride: Record<string, unknown> = {}) {
 }
 
 describe("Telnyx adapter", () => {
+  it("aborts a provider request at the configured deadline", async () => {
+    const fetchImpl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal?.reason),
+          );
+        }),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      provider(fetchImpl, 5).send({
+        from: "+14045550100",
+        to: "+14045550123",
+        body: "Panther Carts: Test",
+      }),
+    ).rejects.toMatchObject({ code: "NETWORK_ERROR", retryable: true });
+  });
+
   it("sends API v2 GSM-7 SMS with E.164 addresses", async () => {
     const fetchImpl = vi
       .fn()

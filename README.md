@@ -110,7 +110,11 @@ Provider setup references:
   and [Advanced Opt-Out](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out)
 
 The outbox worker uses atomic claims, expiring leases, five bounded attempts,
-and retry backoff. Schedule the authenticated POST at least once per minute.
-A rare duplicate remains possible if a provider accepts a message and the
-worker crashes before the SENT state commits; no distributed system can make
-that network boundary perfectly exactly-once without provider idempotency.
+provider request deadlines shorter than the lease, and retry backoff. Schedule
+the authenticated POST at least once per minute; inbound webhooks only record
+the command and response intent and do not synchronously drain the outbox. A
+worker response with `unconfirmed` greater than zero requires operational
+attention and is never counted as sent. A rare duplicate remains possible if a
+provider accepts a message and the worker crashes before the SENT state
+commits; no distributed system can make that network boundary perfectly
+exactly-once without provider idempotency.

@@ -26,6 +26,146 @@ async function holdSessionLock(sessionId: string): Promise<PoolClient> {
 }
 
 describeDb("Ticket 5 forced SMS concurrency", () => {
+  it("serializes duplicate inbound deliveries into one mutation and response", async () => {
+    const pool = getPool();
+    const { sessionId } = await createSession(pool);
+    const phone = "+14045550801";
+    await joinQueue(pool, sessionId, { phone });
+    const eventId = randomUUID();
+    const messageId = randomUUID();
+    const gate = await pool.connect();
+    try {
+      await gate.query("begin");
+      await gate.query(
+        "select public.lock_idempotency_key('inbound_sms_event',$1)",
+        [`telnyx:${eventId}`],
+      );
+      const deliver = () =>
+        pool.query(
+          `select public.handle_inbound_sms(
+             'telnyx',$1,$2,$3,'+14045550100',now(),'TIME',null
+           ) as result`,
+          [eventId, messageId, phone],
+        );
+      const first = deliver();
+      const second = deliver();
+      expect(await isStillPending(first)).toBe(true);
+      expect(await isStillPending(second)).toBe(true);
+
+      await gate.query("commit");
+      const results = (await Promise.all([first, second])).map(
+        (query) => query.rows[0].result as Record<string, unknown>,
+      );
+      expect(
+        results.filter((result) => result.duplicate === false),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.duplicate === true),
+      ).toHaveLength(1);
+      const counts = await pool.query(
+        `select
+           (select count(*)::int from public.inbound_sms_events
+             where provider='telnyx' and provider_event_id=$1) as events,
+           (select count(*)::int from public.notification_outbox
+             where session_id=$2 and type='TIME') as responses`,
+        [eventId, sessionId],
+      );
+      expect(counts.rows[0]).toEqual({ events: 1, responses: 1 });
+    } finally {
+      try {
+        await gate.query("rollback");
+      } catch {
+        // Transaction may already be committed.
+      }
+      gate.release();
+    }
+  });
+
+  it("serializes inbound resolution behind signup for the same phone", async () => {
+    const pool = getPool();
+    const { sessionId } = await createSession(pool);
+    const phone = "+14045550802";
+    const gate = await pool.connect();
+    try {
+      await gate.query("begin");
+      await gate.query(
+        "select public.lock_idempotency_key('active_phone',$1)",
+        [phone],
+      );
+      const signup = joinQueue(pool, sessionId, { phone });
+      expect(await isStillPending(signup)).toBe(true);
+      const inbound = pool.query(
+        `select public.handle_inbound_sms(
+           'telnyx',$1,$2,$3,'+14045550100',now(),'TIME',null
+         ) as result`,
+        [randomUUID(), randomUUID(), phone],
+      );
+      expect(await isStillPending(inbound)).toBe(true);
+
+      await gate.query("commit");
+      const joined = await signup;
+      const response = await inbound;
+      expect(response.rows[0].result).toMatchObject({
+        duplicate: false,
+        outcome: "TIME_WAITING",
+      });
+      expect((await getEntry(pool, joined.queueEntryId)).status).toBe(
+        "WAITING",
+      );
+    } finally {
+      try {
+        await gate.query("rollback");
+      } catch {
+        // Transaction may already be committed.
+      }
+      gate.release();
+    }
+  });
+
+  it("rechecks HOLD after reservation expiry wins the session lock", async () => {
+    const pool = getPool();
+    const { sessionId } = await createSession(pool);
+    await addBins(pool, sessionId, ["1"]);
+    const phone = "+14045550803";
+    const holder = await joinQueue(pool, sessionId, { phone });
+    const next = await joinQueue(pool, sessionId);
+    const locker = await holdSessionLock(sessionId);
+    try {
+      await locker.query(
+        `update public.reservations
+         set expires_at=now()-interval '1 second'
+         where session_id=$1 and queue_entry_id=$2 and status='ACTIVE'`,
+        [sessionId, holder.queueEntryId],
+      );
+      const hold = pool.query(
+        `select public.handle_inbound_sms(
+           'telnyx',$1,$2,$3,'+14045550100',now(),'HOLD',null
+         ) as result`,
+        [randomUUID(), randomUUID(), phone],
+      );
+      expect(await isStillPending(hold)).toBe(true);
+
+      await locker.query("select public.expire_reservations($1)", [sessionId]);
+      await locker.query("commit");
+      const response = await hold;
+      expect(response.rows[0].result).toMatchObject({
+        duplicate: false,
+        outcome: "NO_ACTIVE_MATCH",
+      });
+      expect((await getEntry(pool, holder.queueEntryId)).status).toBe(
+        "EXPIRED",
+      );
+      expect((await getEntry(pool, next.queueEntryId)).status).toBe("READY");
+    } finally {
+      try {
+        await locker.query("rollback");
+      } catch {
+        // Transaction may already be committed.
+      }
+      locker.release();
+    }
+  });
+
   it("serializes READY cancellation against checkout and never releases an OUT bin", async () => {
     const pool = getPool();
     const { sessionId } = await createSession(pool);

@@ -26,7 +26,11 @@ export async function createMigratedDb(
 ): Promise<Db> {
   const db = new PGlite();
   if (options.createServiceRole) {
-    await db.exec("create role service_role nologin");
+    await db.exec(`
+      create role service_role nologin;
+      create role anon nologin;
+      create role authenticated nologin;
+    `);
   }
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith(".sql"))

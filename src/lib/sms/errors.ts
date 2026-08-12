@@ -5,6 +5,7 @@ export type SmsProviderErrorCode =
   | "INVALID_DESTINATION"
   | "RECIPIENT_OPTED_OUT"
   | "PROVIDER_REJECTED"
+  | "INVALID_MESSAGE_TEMPLATE"
   | "INVALID_PROVIDER_RESPONSE";
 
 /** Safe provider failure. Raw provider responses, credentials, and PII stay out. */

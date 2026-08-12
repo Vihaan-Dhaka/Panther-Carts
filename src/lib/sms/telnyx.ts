@@ -6,7 +6,12 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { SmsProviderError, SmsWebhookError } from "./errors";
-import type { InboundSms, OutboundSms, SmsProvider } from "./types";
+import {
+  SMS_PROVIDER_REQUEST_TIMEOUT_MS,
+  type InboundSms,
+  type OutboundSms,
+  type SmsProvider,
+} from "./types";
 import {
   outboundSmsSchema,
   telnyxErrorResponseSchema,
@@ -27,6 +32,7 @@ export type TelnyxConfig = {
 type TelnyxDependencies = {
   fetch?: typeof fetch;
   now?: () => Date;
+  requestTimeoutMs?: number;
 };
 
 function telnyxPublicKey(value: string): KeyObject {
@@ -111,6 +117,7 @@ export class TelnyxSmsProvider implements SmsProvider {
   readonly sender: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
+  private readonly requestTimeoutMs: number;
 
   constructor(
     private readonly config: TelnyxConfig,
@@ -119,6 +126,8 @@ export class TelnyxSmsProvider implements SmsProvider {
     this.sender = config.fromNumber;
     this.fetchImpl = dependencies.fetch ?? fetch;
     this.now = dependencies.now ?? (() => new Date());
+    this.requestTimeoutMs =
+      dependencies.requestTimeoutMs ?? SMS_PROVIDER_REQUEST_TIMEOUT_MS;
   }
 
   async send(message: OutboundSms) {
@@ -141,6 +150,7 @@ export class TelnyxSmsProvider implements SmsProvider {
           type: "SMS",
           encoding: "gsm7",
         }),
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
     } catch {
       throw new SmsProviderError("NETWORK_ERROR", true);

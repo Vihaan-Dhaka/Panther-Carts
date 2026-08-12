@@ -76,14 +76,18 @@ queue logic / database operations, with SMS as a server-side effect.
   configured public URL and every form parameter before trusted parsing.
 - Panther Carts commands are exactly TIME, HOLD, and CANCEL. HELP, STOP, and
   START/UNSTOP are carrier-compliance keywords. Provider classifications are
-  acknowledged without a queue mutation or duplicate response.
+  acknowledged without a queue mutation or duplicate response. A provider
+  classification attached to an application command records
+  `COMPLIANCE_OVERRODE_COMMAND` so Advanced Opt-Out mistakes are detectable.
 - `handle_inbound_sms` records the provider-scoped event/message identifier,
   resolves the normalized sender to one active lifecycle, executes the
   authoritative mutation, and enqueues its response in one transaction.
 - Outbound delivery claims `notification_outbox` rows with `FOR UPDATE SKIP
-LOCKED`, a claim token, and an expiring lease. Provider failures are reduced
-  to safe retry classes. Credentials, raw signatures, phone numbers, message
-  bodies, and provider error bodies are never logged.
+LOCKED`, a claim token, and an expiring lease. Provider HTTP requests have a
+  shorter deadline than the lease, and rejected completion tokens are surfaced
+  as unconfirmed. Provider failures are reduced to safe retry classes.
+  Credentials, raw signatures, phone numbers, message bodies, and provider
+  error bodies are never logged.
 - The worker guard rejects Unicode and multi-segment normal templates. The
   provider network boundary cannot be perfectly exactly-once: a process crash
   after send acceptance and before the SENT commit can be retried after lease

@@ -273,5 +273,6 @@ describe("Ticket 4 admin PostgreSQL functions", () => {
       [sessionId, rentalId, randomUUID()],
     );
     expect(overdue.rows[0].result.body).toMatch(/minute(s)? overdue/);
+    expect(overdue.rows[0].result.body).toContain("STOP=opt out.");
   });
 });
