@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { analyzeSmsSegments } from "@/lib/sms/gsm";
 import {
   addBins,
@@ -19,6 +19,17 @@ let db: Db;
 
 beforeEach(async () => {
   db = await createMigratedDb();
+});
+
+afterEach(async () => {
+  const messages = await db.query<{ body: string }>(
+    `select body from public.notification_outbox`,
+  );
+  for (const { body } of messages.rows) {
+    const optOutPhrases =
+      body.match(/(?:Reply STOP to opt out\.|STOP=opt out\.)/g) ?? [];
+    expect(optOutPhrases, body).toHaveLength(1);
+  }
 });
 
 async function inbound(input: {

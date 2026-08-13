@@ -766,7 +766,7 @@ begin
       type, body, dedupe_key, destination_phone
     ) values (
       'UNKNOWN',
-      'Panther Carts: Reply TIME, HOLD, or CANCEL for queue help. Reply STOP to opt out.',
+      'Panther Carts: Reply TIME, HOLD, or CANCEL for queue help. STOP=opt out.',
       'UNKNOWN:' || p_provider || ':' || p_provider_event_id,
       v_phone
     ) returning * into v_outbox;
@@ -796,7 +796,7 @@ begin
       type, body, dedupe_key, destination_phone
     ) values (
       p_command::public.notification_type,
-      'Panther Carts: No active queue, reservation, or rental was found. Reply STOP to opt out.',
+      'Panther Carts: No active queue, reservation, or rental was found. STOP=opt out.',
       'RESPONSE:' || p_provider || ':' || p_provider_event_id,
       v_phone
     ) returning * into v_outbox;
@@ -833,7 +833,7 @@ begin
         type, body, dedupe_key, destination_phone
       ) values (
         p_command::public.notification_type,
-        'Panther Carts: No active queue, reservation, or rental was found. Reply STOP to opt out.',
+        'Panther Carts: No active queue, reservation, or rental was found. STOP=opt out.',
         'RESPONSE:' || p_provider || ':' || p_provider_event_id,
         v_phone
       ) returning * into v_outbox;
