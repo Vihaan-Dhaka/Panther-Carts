@@ -40,7 +40,7 @@ async function inbound(input: {
 }
 
 describe("Ticket 5 signup notifications and consent", () => {
-  it("keeps authoritative SQL templates in one GSM-7 segment at boundaries", async () => {
+  it("keeps authoritative SQL templates in one segment at six-digit operating boundaries", async () => {
     const templates = await db.query<{ body: string }>(
       `select body from (values
         (public.sms_ready_body('9999',240)),
@@ -87,7 +87,7 @@ describe("Ticket 5 signup notifications and consent", () => {
     );
   });
 
-  it("normalizes legacy MANUAL rows while backfilling a populated database", async () => {
+  it("normalizes every legacy notification type while backfilling a populated database", async () => {
     const legacyDb = await createMigratedDb({
       throughMigration: "20260811120000_admin_dashboard.sql",
     });
@@ -101,24 +101,85 @@ describe("Ticket 5 signup notifications and consent", () => {
     );
     await legacyDb.query(
       `insert into public.notification_outbox
-        (session_id, student_id, type, body, dedupe_key)
-       values ($1, $2, 'MANUAL', 'Panther Carts: Return confirmed.', 'legacy-manual')`,
+        (session_id, student_id, type, body, status, dedupe_key)
+       values
+        ($1, $2, 'MANUAL', 'Panther Carts: Return confirmed.', 'PENDING', 'legacy-manual'),
+        ($1, $2, 'INITIAL', 'You joined the Panther Carts waitlist. Position 3.', 'PENDING', 'legacy-initial'),
+        ($1, $2, 'READY', 'A Panther Cart is reserved for you. Your pickup code is 4821.', 'FAILED', 'legacy-ready'),
+        ($1, $2, 'HOLD', 'Panther Carts: Already disclosed. STOP=opt out.', 'PENDING', 'legacy-disclosed')`,
       [sessionId, student.rows[0].id],
     );
 
     await applyMigration(legacyDb, "20260812120000_two_way_sms.sql");
     const migrated = await legacyDb.query<{
+      dedupe_key: string;
       destination_phone: string;
       body: string;
     }>(
-      `select destination_phone, body
+      `select dedupe_key, destination_phone, body
        from public.notification_outbox
-       where dedupe_key = 'legacy-manual'`,
+       where dedupe_key like 'legacy-%'
+       order by dedupe_key`,
     );
-    expect(migrated.rows[0]).toEqual({
-      destination_phone: "+14045550777",
-      body: "Panther Carts: Return confirmed. STOP=opt out.",
-    });
+    expect(migrated.rows).toEqual([
+      {
+        dedupe_key: "legacy-disclosed",
+        destination_phone: "+14045550777",
+        body: "Panther Carts: Already disclosed. STOP=opt out.",
+      },
+      {
+        dedupe_key: "legacy-initial",
+        destination_phone: "+14045550777",
+        body: "You joined the Panther Carts waitlist. Position 3. STOP=opt out.",
+      },
+      {
+        dedupe_key: "legacy-manual",
+        destination_phone: "+14045550777",
+        body: "Panther Carts: Return confirmed. STOP=opt out.",
+      },
+      {
+        dedupe_key: "legacy-ready",
+        destination_phone: "+14045550777",
+        body: "A Panther Cart is reserved for you. Your pickup code is 4821. STOP=opt out.",
+      },
+    ]);
+
+    await legacyDb.query(
+      `update public.notification_outbox
+       set body = case
+         when dedupe_key = 'legacy-initial' then 'Panther Carts: Rewritten.'
+         else body
+       end,
+       destination_phone = '+14045550777'
+       where dedupe_key like 'legacy-%'`,
+    );
+    const updated = await legacyDb.query<{ dedupe_key: string; body: string }>(
+      `select dedupe_key, body
+       from public.notification_outbox
+       where dedupe_key like 'legacy-%'
+       order by dedupe_key`,
+    );
+    for (const row of updated.rows) {
+      expect(row.body.match(/STOP=opt out\./g), row.dedupe_key).toHaveLength(1);
+    }
+    expect(
+      updated.rows.find((row) => row.dedupe_key === "legacy-initial")?.body,
+    ).toBe("Panther Carts: Rewritten. STOP=opt out.");
+  });
+
+  it("keeps allocate_bins mutations explicitly scoped to the requested session", async () => {
+    const definition = await db.query<{ source: string }>(
+      `select pg_get_functiondef(
+        'public.allocate_bins(uuid)'::regprocedure
+      ) as source`,
+    );
+    const source = definition.rows[0].source;
+    expect(source).toMatch(
+      /update public\.bins[\s\S]*?where id = v_bin\.id and session_id = p_session_id;/,
+    );
+    expect(source).toMatch(
+      /update public\.queue_entries[\s\S]*?where id = v_entry\.id and session_id = p_session_id;/,
+    );
   });
 
   it("creates one waiting signup message and one combined immediate-ready message", async () => {

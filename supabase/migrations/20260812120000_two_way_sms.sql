@@ -59,8 +59,7 @@ security definer
 set search_path = ''
 as $$
 begin
-  if new.type = 'MANUAL'
-     and right(new.body, 13) <> 'STOP=opt out.' then
+  if right(new.body, 13) <> 'STOP=opt out.' then
     new.body := new.body || ' STOP=opt out.';
   end if;
   if new.destination_phone is null and new.student_id is not null then
@@ -252,7 +251,7 @@ begin
     v_code := public.generate_pickup_code(p_session_id);
     update public.bins
     set status = 'RESERVED', updated_at = now()
-    where id = v_bin.id;
+    where id = v_bin.id and session_id = p_session_id;
     update public.queue_entries
     set status = 'READY',
         ready_at = now(),
@@ -261,7 +260,7 @@ begin
         pickup_expires_at = now() + make_interval(mins => v_pickup_window),
         queue_rank = null,
         updated_at = now()
-    where id = v_entry.id;
+    where id = v_entry.id and session_id = p_session_id;
 
     insert into public.reservations (
       session_id, queue_entry_id, bin_id, status, expires_at

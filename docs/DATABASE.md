@@ -206,12 +206,22 @@ call, the worker verifies that the returned lease expiry still has enough time
 for delivery, completion, and the safety margin; otherwise it returns that row
 to retry without sending.
 
+The worker compares the database-generated lease timestamp with its local
+clock. Deployment therefore requires database and worker hosts to remain
+time-synchronized within the 15-second safety margin.
+
 This prevents simultaneous healthy workers from sending the same claimed row.
 It cannot make the external provider boundary exactly-once: if the provider
 accepts a message and the process cannot confirm
 `complete_notification_outbox_sent` before lease recovery, it can be sent again.
 Provider message IDs are stored only after acceptance.
 The worker treats a false completion result as unconfirmed, never as SENT.
+
+The longest normal template is 156 GSM-7 septets at the documented six-digit
+operating boundary for queue positions and wait estimates. PostgreSQL integer
+columns do not enforce that digit convention; unusually large values can exceed
+one segment, so the worker's `assertSingleGsm7Segment` check remains the hard
+delivery backstop and fails the row instead of sending a multipart message.
 
 ## Ticket 5 inbound session resolution
 
