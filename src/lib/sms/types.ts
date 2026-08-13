@@ -1,31 +1,44 @@
-/**
- * Provider-independent SMS contract. Concrete adapters (Telnyx, Twilio) will
- * implement this interface in Ticket 5 — no provider SDK is imported yet.
- */
+export const SMS_PROVIDERS = ["telnyx", "twilio"] as const;
+export type SmsProviderName = (typeof SMS_PROVIDERS)[number];
+
+/** Keep provider calls comfortably inside the database outbox lease. */
+export const SMS_PROVIDER_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface OutboundSms {
-  /** E.164 destination number, e.g. +15551234567 */
+  /** E.164 sender and destination numbers. */
+  from: string;
   to: string;
   body: string;
 }
 
+export type SmsComplianceClassification = "STOP" | "START" | "HELP";
+
 export interface InboundSms {
-  /** E.164 sender number */
+  provider: SmsProviderName;
+  /** Provider-scoped webhook and message identifiers used for idempotency. */
+  providerEventId: string;
+  providerMessageId: string;
+  /** E.164 sender and destination numbers. */
   from: string;
-  /** Raw message body; command parsing (TIME/HOLD/CANCEL/HELP) happens elsewhere */
+  to: string;
   body: string;
   receivedAt: Date;
+  /** Set when the provider already handled and replied to a compliance keyword. */
+  compliance: SmsComplianceClassification | null;
+}
+
+export interface SmsSendResult {
+  providerMessageId: string;
 }
 
 export interface SmsProvider {
-  send(message: OutboundSms): Promise<{ providerMessageId: string }>;
-  /**
-   * Verify and parse an inbound webhook request from the provider.
-   * Returns null when the request is not a valid inbound message.
-   */
+  readonly name: SmsProviderName;
+  readonly sender: string;
+  send(message: OutboundSms): Promise<SmsSendResult>;
+  /** Verify the exact request before parsing any trusted webhook fields. */
   parseInboundWebhook(request: Request): Promise<InboundSms | null>;
 }
 
-/** Recognized inbound SMS commands. */
-export const SMS_COMMANDS = ["TIME", "HOLD", "CANCEL", "HELP"] as const;
+/** Panther Carts queue commands. Carrier compliance keywords are separate. */
+export const SMS_COMMANDS = ["TIME", "HOLD", "CANCEL"] as const;
 export type SmsCommand = (typeof SMS_COMMANDS)[number];

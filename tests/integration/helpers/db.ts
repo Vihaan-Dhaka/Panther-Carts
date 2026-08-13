@@ -164,7 +164,7 @@ export async function joinQueue(
   const phone = overrides.phone ?? `+1${unique.padStart(10, "9")}`;
 
   const res = await client.query(
-    `select public.join_queue($1, $2, $3, $4, $5) as result`,
+    `select public.join_queue($1, $2, $3, $4, $5, true) as result`,
     [sessionId, fullName, pantherId, email, phone],
   );
   const result = res.rows[0].result;

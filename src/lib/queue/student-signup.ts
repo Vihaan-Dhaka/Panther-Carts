@@ -17,6 +17,7 @@ export type StudentSignupFormValues = {
   pantherId: string;
   email: string;
   phone: string;
+  smsConsent: boolean;
 };
 
 export type StudentSignupFieldErrors = Partial<
@@ -52,12 +53,14 @@ export function preserveStudentSignupValues(input: {
   pantherId?: unknown;
   email?: unknown;
   phone?: unknown;
+  smsConsent?: unknown;
 }): StudentSignupFormValues {
   return {
     fullName: stringValue(input.fullName),
     pantherId: stringValue(input.pantherId),
     email: stringValue(input.email),
     phone: stringValue(input.phone),
+    smsConsent: input.smsConsent === "on" || input.smsConsent === true,
   };
 }
 
@@ -138,6 +141,7 @@ export async function executeStudentSignup(
     pantherId?: unknown;
     email?: unknown;
     phone?: unknown;
+    smsConsent?: unknown;
   },
 ): Promise<StudentSignupState> {
   const values = preserveStudentSignupValues(input);

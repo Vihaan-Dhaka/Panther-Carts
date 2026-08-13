@@ -137,21 +137,21 @@ describeDb("join + allocation", () => {
     const { sessionId } = await createSession(pool);
     await addBins(pool, sessionId, ["1"]);
     const a = await joinQueue(pool, sessionId);
-    // One INITIAL for the signup, one READY for the immediate allocation.
+    // Immediate allocation is combined into the one INITIAL signup message.
     const initial = await pool.query(
       `select count(*)::int as c from public.notification_outbox
         where session_id = $1 and type = 'INITIAL'`,
       [sessionId],
     );
     expect(initial.rows[0].c).toBe(1);
-    // Re-running allocation must not create a second READY notification.
+    // Re-running allocation must not create a separate READY notification.
     await pool.query(`select public.allocate_bins($1)`, [sessionId]);
     const ready = await pool.query(
       `select count(*)::int as c from public.notification_outbox
         where session_id = $1 and type = 'READY'`,
       [sessionId],
     );
-    expect(ready.rows[0].c).toBe(1);
+    expect(ready.rows[0].c).toBe(0);
     expect(a.status).toBe("READY");
   });
 });

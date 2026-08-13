@@ -53,8 +53,8 @@ $$;
 -- hit a raw unique-constraint error instead of a clean IDEMPOTENCY_CONFLICT.
 -- Locking on the key itself closes that window.
 --
--- Lock ordering is always session-then-key across every function, so these two
--- lock classes cannot deadlock against each other.
+-- Ticket 1 operations take the session lock before their operation key. Later
+-- migrations document any earlier global idempotency/identity locks they add.
 create or replace function public.lock_idempotency_key(
   p_operation text,
   p_key text

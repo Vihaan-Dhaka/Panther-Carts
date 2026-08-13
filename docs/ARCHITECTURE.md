@@ -16,7 +16,9 @@ queue logic / database operations, with SMS as a server-side effect.
 
 ## 2. Server operations (server actions and route handlers)
 
-- Location: server actions and `src/app/api/**` route handlers.
+- Location: server actions and `src/app/api/**` route handlers, including
+  provider-specific signed SMS webhooks and the authenticated internal outbox
+  worker trigger.
 - The only entry points for state changes. Each operation validates input
   with Zod schemas from `src/lib/validation/`, checks authorization
   (`src/lib/auth/`), invokes queue logic, persists via database operations,
@@ -63,20 +65,45 @@ queue logic / database operations, with SMS as a server-side effect.
 
 ## 5. SMS
 
-- Location: `src/lib/sms/`.
-- Provider-independent: application code depends on the `SmsProvider`
-  interface (`types.ts`); Telnyx and Twilio adapters implement it in
-  Ticket 5, selected via `SMS_PROVIDER`.
-- Outbound messages are sent by server operations after state changes.
-- Inbound commands (TIME, HOLD, CANCEL, HELP) arrive at a webhook route
-  handler, are verified and parsed by the provider adapter, validated, and
-  dispatched to the same server operations the UI uses — SMS is an
-  alternative entry point, not a separate logic path.
+- Location: `src/lib/sms/` and provider routes under `src/app/api/sms/`.
+- Provider-independent: application code depends on `SmsProvider`; Telnyx and
+  Twilio adapters contain all concrete HTTP and signature behavior. Server-only
+  selection validates credentials only for the one `SMS_PROVIDER`. There is no
+  automatic failover because a cross-provider retry can duplicate messages and
+  violate compliance behavior.
+- Telnyx verifies the Ed25519 signature over the exact raw body and timestamp
+  before JSON parsing. Twilio verifies `X-Twilio-Signature` against the exact
+  configured public URL and every form parameter before trusted parsing.
+- Panther Carts commands are exactly TIME, HOLD, and CANCEL. HELP, STOP, and
+  START/UNSTOP are carrier-compliance keywords. Provider classifications are
+  acknowledged without a queue mutation or duplicate response. A provider
+  classification attached to an application command records
+  `COMPLIANCE_OVERRODE_COMMAND` so Advanced Opt-Out mistakes are detectable.
+- `handle_inbound_sms` records the provider-scoped event/message identifier,
+  resolves the normalized sender to one active lifecycle, executes the
+  authoritative mutation, and enqueues its response in one transaction.
+- Outbound delivery claims `notification_outbox` rows with `FOR UPDATE SKIP
+LOCKED`, a claim token, and an expiring lease. Provider HTTP requests have a
+  30-second deadline, database RPCs have a two-second deadline, and both the
+  database and worker cap the sequential batch at three. Each claimed row
+  carries the authoritative lease expiry; rows without enough remaining budget
+  are returned to retry without a provider call. Rejected or timed-out SENT
+  completions are surfaced as unconfirmed. Provider failures are reduced to
+  safe retry classes.
+  Credentials, raw signatures, phone numbers, message bodies, and provider
+  error bodies are never logged.
+- PII-free operational events include only fixed outcome codes, provider name,
+  and aggregate delivery counts. Phone numbers, bodies, signatures, raw errors,
+  and credentials are excluded.
+- The worker guard rejects Unicode and multi-segment normal templates. The
+  provider network boundary cannot be perfectly exactly-once: a failure after
+  send acceptance and before confirmation of the SENT commit can be retried
+  after lease expiry.
 
 ## Testing boundaries
 
-- `tests/unit` — queue logic, validation schemas, SMS command parsing
-  (pure functions, Vitest).
+- `tests/unit` — queue logic, validation schemas, SMS commands, GSM analysis,
+  provider adapters/signatures, and outbox worker behavior (Vitest).
 - `tests/integration` — server operations against a database, concurrency
   cases (Vitest).
 - `tests/e2e` — full browser flows (Playwright).

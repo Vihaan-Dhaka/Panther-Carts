@@ -75,3 +75,57 @@ without them.
 Port conflicts, stale PID files, changing the port, and using an existing
 PostgreSQL install are covered in
 [`docs/LOCAL_DATABASE.md`](docs/LOCAL_DATABASE.md).
+
+## SMS deployment configuration
+
+Set `SMS_PROVIDER` to exactly `telnyx` (recommended) or `twilio`; configure only
+that provider's credentials plus a local 10DLC `SMS_FROM_NUMBER`. Never commit
+values from `.env.local`.
+
+- Telnyx webhook: `https://YOUR-DOMAIN/api/sms/telnyx`
+- Twilio webhook: `https://YOUR-DOMAIN/api/sms/twilio`
+- Authenticated worker: `POST https://YOUR-DOMAIN/api/internal/sms-outbox`
+  with `Authorization: Bearer $SMS_OUTBOX_WORKER_SECRET`
+
+Telnyx requires `TELNYX_API_KEY` and the account Ed25519
+`TELNYX_PUBLIC_KEY`. Twilio requires `TWILIO_ACCOUNT_SID`,
+`TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID`, and
+`TWILIO_WEBHOOK_URL`; that URL must exactly match the public webhook URL Twilio
+signs, including any query string.
+
+Before production, manually assign the local 10DLC number and webhook to the
+selected provider profile/service and complete 10DLC registration. Enable
+Advanced Opt-Out and remove `CANCEL` from opt-out keywords while retaining
+provider-managed STOP, START/UNSTOP, and HELP responses. Panther Carts uses
+`CANCEL` to leave its queue; it is not an SMS opt-out. Do not use a toll-free
+number for this flow.
+
+Provider setup references:
+
+- [Telnyx API v2 send](https://developers.telnyx.com/api-reference/messages/send-a-message),
+  [signed inbound webhooks](https://developers.telnyx.com/docs/messaging/messages/receiving-webhooks),
+  and [Advanced Opt-In/Out](https://developers.telnyx.com/docs/messaging/messages/advanced-opt-in-out)
+- [Twilio message API](https://www.twilio.com/docs/messaging/api/message-resource),
+  [webhook signatures](https://www.twilio.com/docs/usage/webhooks/webhooks-security),
+  and [Advanced Opt-Out](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out)
+
+The outbox worker uses atomic claims of at most three rows, expiring leases,
+five bounded attempts, 30-second provider request deadlines, two-second
+database RPC deadlines, and retry backoff. PostgreSQL and the worker both
+enforce the three-row cap. Each claim returns its authoritative lease expiry,
+and the worker returns a row to retry without sending when the remaining lease
+cannot cover provider delivery, database completion, and the safety margin.
+Schedule the authenticated POST at least once per minute;
+inbound webhooks only record the command and response intent and do not
+synchronously drain the outbox. PII-free structured operational events report
+webhook outcome codes and aggregate delivery counts. A worker response with
+`unconfirmed` greater than zero requires operational attention and is never
+counted as sent. A rare duplicate remains possible if a provider accepts a
+message but its SENT completion cannot be confirmed before the claim expires;
+a crash or network failure at that boundary can trigger a retry. No distributed
+system can make that boundary perfectly exactly-once without provider
+idempotency.
+
+Until Ticket 6 adds rate limiting, UNKNOWN commands and messages from numbers
+without an active entry receive one safe response per provider event. Operators
+should monitor that billable reply path for abuse.

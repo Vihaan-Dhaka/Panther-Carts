@@ -62,6 +62,7 @@ export async function joinQueue(
     p_panther_id: student.pantherId,
     p_email: student.email,
     p_phone: student.phone,
+    p_sms_consent: student.smsConsent,
   });
 
   if (error) {

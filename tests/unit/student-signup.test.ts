@@ -11,6 +11,7 @@ const validInput = {
   pantherId: "  900123456  ",
   email: "  Jordan.Panther@Example.EDU  ",
   phone: "(404) 555-0123",
+  smsConsent: "on",
 };
 
 type FakeOptions = {
@@ -62,6 +63,7 @@ describe("student signup server operation", () => {
       p_panther_id: "900123456",
       p_email: "jordan.panther@example.edu",
       p_phone: "+14045550123",
+      p_sms_consent: true,
     });
   });
 
@@ -76,6 +78,22 @@ describe("student signup server operation", () => {
     if (state.status === "error") {
       expect(state.fieldErrors.email?.[0]).toBe("A valid email is required");
       expect(state.values.email).toBe("not-an-email");
+    }
+    expect(from).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("requires SMS consent without touching the database", async () => {
+    const { client, from, rpc } = fakeClient();
+    const state = await executeStudentSignup(client, "fall-2026", {
+      ...validInput,
+      smsConsent: null,
+    });
+
+    expect(state.status).toBe("error");
+    if (state.status === "error") {
+      expect(state.fieldErrors.smsConsent?.[0]).toContain("transactional SMS");
+      expect(state.values.smsConsent).toBe(false);
     }
     expect(from).not.toHaveBeenCalled();
     expect(rpc).not.toHaveBeenCalled();

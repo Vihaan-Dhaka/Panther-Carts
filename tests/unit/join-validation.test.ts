@@ -10,6 +10,7 @@ const valid = {
   pantherId: "900123456",
   email: "Jordan.Panther@Example.EDU",
   phone: "(404) 555-0123",
+  smsConsent: "on",
 };
 
 describe("joinQueueSchema", () => {
@@ -47,6 +48,12 @@ describe("joinQueueSchema", () => {
       fullName: new Blob(["Jordan Panther"]),
     });
     expect(result.success).toBe(false);
+  });
+
+  it("requires explicit transactional SMS consent", () => {
+    expect(
+      joinQueueSchema.safeParse({ ...valid, smsConsent: null }).success,
+    ).toBe(false);
   });
 });
 

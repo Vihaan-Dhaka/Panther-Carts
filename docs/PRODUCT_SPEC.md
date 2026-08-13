@@ -14,7 +14,7 @@ full before making any product change.
 - Vitest
 - Playwright
 - Vercel-compatible deployment
-- A provider-independent SMS module that will later support Telnyx or Twilio
+- A provider-independent SMS module with Telnyx (recommended) and Twilio
 
 ## Overview
 
@@ -27,8 +27,22 @@ admin.
 - Students open a session-specific signup link.
 - They enter full name, Panther ID, student email, and phone number.
 - After signup, all student interaction occurs through SMS.
-- The first SMS includes queue position and estimated wait.
-- SMS commands are `TIME`, `HOLD`, `CANCEL`, and `HELP`.
+- Student signup requires explicit consent to Panther Carts transactional
+  rental messages. Frequency varies; message/data rates may apply. The
+  disclosure explains carrier-managed STOP and HELP behavior. No marketing
+  consent or marketing messages are collected.
+- The first SMS is one combined signup message. It includes queue position and
+  estimated wait (or a clear unavailable estimate), or the immediate pickup
+  offer when a cart is ready. It also includes TIME, CANCEL, conditional HOLD,
+  required disclosures, and STOP instructions.
+- Panther Carts application commands are exactly `TIME`, `HOLD`, and `CANCEL`.
+  `HELP`, `STOP`, and `START`/`UNSTOP` are provider-managed compliance keywords,
+  never queue commands. A forwarded compliance webhook is acknowledged without
+  a queue mutation or a duplicate application response. If a provider labels
+  an application command as compliance, the event records a distinct
+  misconfiguration outcome without executing that command.
+- `CANCEL` leaves the Panther Carts queue/reservation. It is not carrier opt-out.
+- All normal Panther Carts messages fit in one GSM-7 SMS segment.
 - Students do not create accounts.
 - Students do not receive personal QR codes.
 
@@ -55,6 +69,28 @@ admin.
 - When the queue exceeds the number of bins, add an additional
   rental-duration cycle.
 - Estimates are informational and never determine queue order.
+
+### SMS providers and delivery
+
+- Telnyx is the recommended/default production provider. Twilio is a fully
+  functional configurable alternative. `SMS_PROVIDER` selects one; there is no
+  automatic cross-provider failover.
+- Use a local 10DLC sender. Do not use a toll-free sender whose carrier keyword
+  rules prevent `CANCEL` from reaching Panther Carts.
+- Provider Advanced Opt-Out must remove `CANCEL` from opt-out aliases while
+  retaining STOP, START/UNSTOP, and HELP provider handling.
+- Provider webhooks are signature-verified before parsing. Inbound event/message
+  identifiers are provider-scoped and idempotent.
+- Outbound messages use a database-backed claim/lease outbox with bounded
+  attempts and retry backoff. Simultaneous healthy workers cannot claim the
+  same row. PostgreSQL and the worker cap claims at three rows; provider and
+  database requests have bounded deadlines, and the worker does not send a row
+  unless its authoritative lease expiry retains enough delivery and completion
+  budget plus a safety margin. A rejected or timed-out SENT completion is
+  reported as unconfirmed rather than sent. A failure after provider acceptance
+  but before confirmation of the SENT commit can still cause a duplicate
+  on lease recovery; the system does not claim perfect exactly-once delivery
+  across that network boundary.
 
 ## Staff interface
 

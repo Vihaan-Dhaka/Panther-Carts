@@ -17,6 +17,7 @@ export async function submitStudentSignup(
     pantherId: formData.get("pantherId"),
     email: formData.get("email"),
     phone: formData.get("phone"),
+    smsConsent: formData.get("smsConsent"),
   };
 
   try {

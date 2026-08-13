@@ -21,18 +21,32 @@ const MIGRATIONS_DIR = path.resolve(
 
 export type Db = PGlite;
 
+export async function applyMigration(db: Db, fileName: string): Promise<void> {
+  if (!/^\d{14}_[a-z0-9_]+\.sql$/.test(fileName)) {
+    throw new Error("Invalid migration filename");
+  }
+  await db.exec(readFileSync(path.join(MIGRATIONS_DIR, fileName), "utf8"));
+}
+
 export async function createMigratedDb(
-  options: { createServiceRole?: boolean } = {},
+  options: { createServiceRole?: boolean; throughMigration?: string } = {},
 ): Promise<Db> {
   const db = new PGlite();
   if (options.createServiceRole) {
-    await db.exec("create role service_role nologin");
+    await db.exec(`
+      create role service_role nologin;
+      create role anon nologin;
+      create role authenticated nologin;
+      alter default privileges in schema public
+        grant execute on functions to anon, authenticated;
+    `);
   }
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith(".sql"))
     .sort();
   for (const file of files) {
-    await db.exec(readFileSync(path.join(MIGRATIONS_DIR, file), "utf8"));
+    await applyMigration(db, file);
+    if (file === options.throughMigration) break;
   }
   return db;
 }
@@ -109,7 +123,7 @@ export async function joinQueue(
   const unique = String(counter).padStart(10, "5");
   const phone = overrides.phone ?? `+1${unique}`;
   const res = await db.query<{ r: JoinRpcResult }>(
-    `select public.join_queue($1, $2, $3, $4, $5) as r`,
+    `select public.join_queue($1, $2, $3, $4, $5, true) as r`,
     [
       sessionId,
       `Student ${counter}`,

@@ -711,7 +711,7 @@ export async function executeNotifyAdminRental(
       status: "success",
       message: result.data.idempotent_replay
         ? "That notification was already queued safely."
-        : "Rental-time notification queued for Ticket 5 delivery.",
+        : "Rental-time notification queued for SMS delivery.",
       idempotentReplay: result.data.idempotent_replay,
     };
   } catch (error) {
