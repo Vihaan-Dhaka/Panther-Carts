@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { SmsWebhookError } from "@/lib/sms/errors";
 import { computeTwilioSignature, TwilioSmsProvider } from "@/lib/sms/twilio";
@@ -71,15 +72,17 @@ describe("Twilio adapter", () => {
     ).rejects.toMatchObject({ code: "NETWORK_ERROR", retryable: true });
   });
 
-  it("canonicalizes repeated parameters like Twilio's reference validator", () => {
-    expect(
-      computeTwilioSignature(authToken, webhookUrl, {
-        Alpha: ["b", "a", "a"],
-      }),
-    ).toBe(
-      computeTwilioSignature(authToken, webhookUrl, {
-        Alpha: ["a", "b"],
-      }),
+  it("sorts repeated values without discarding duplicates", () => {
+    const repeated = computeTwilioSignature(authToken, webhookUrl, {
+      Alpha: ["b", "a", "a"],
+    });
+    const expected = createHmac("sha1", authToken)
+      .update(`${webhookUrl}AlphaaAlphaaAlphab`, "utf8")
+      .digest("base64");
+
+    expect(repeated).toBe(expected);
+    expect(repeated).not.toBe(
+      computeTwilioSignature(authToken, webhookUrl, { Alpha: ["a", "b"] }),
     );
   });
 

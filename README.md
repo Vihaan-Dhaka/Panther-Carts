@@ -110,17 +110,21 @@ Provider setup references:
   and [Advanced Opt-Out](https://www.twilio.com/docs/messaging/tutorials/advanced-opt-out)
 
 The outbox worker uses atomic claims of at most three rows, expiring leases,
-five bounded attempts, 30-second provider request deadlines, and retry backoff.
-The complete worst-case sequential batch plus a safety margin fits inside its
-120-second lease. Schedule the authenticated POST at least once per minute;
+five bounded attempts, 30-second provider request deadlines, two-second
+database RPC deadlines, and retry backoff. PostgreSQL and the worker both
+enforce the three-row cap. Each claim returns its authoritative lease expiry,
+and the worker returns a row to retry without sending when the remaining lease
+cannot cover provider delivery, database completion, and the safety margin.
+Schedule the authenticated POST at least once per minute;
 inbound webhooks only record the command and response intent and do not
 synchronously drain the outbox. PII-free structured operational events report
 webhook outcome codes and aggregate delivery counts. A worker response with
 `unconfirmed` greater than zero requires operational attention and is never
-counted as sent. A rare duplicate remains possible if a
-provider accepts a message and the worker crashes before the SENT state
-commits; no distributed system can make that network boundary perfectly
-exactly-once without provider idempotency.
+counted as sent. A rare duplicate remains possible if a provider accepts a
+message but its SENT completion cannot be confirmed before the claim expires;
+a crash or network failure at that boundary can trigger a retry. No distributed
+system can make that boundary perfectly exactly-once without provider
+idempotency.
 
 Until Ticket 6 adds rate limiting, UNKNOWN commands and messages from numbers
 without an active entry receive one safe response per provider event. Operators

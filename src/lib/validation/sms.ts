@@ -92,6 +92,7 @@ export const claimedOutboxRowSchema = z.object({
   body: z.string().min(1).max(1_600),
   attempts: z.number().int().positive(),
   claim_token: z.uuid(),
+  lease_expires_at: z.string().datetime({ offset: true }),
 });
 
 export const outboxCompletionSchema = z.boolean();

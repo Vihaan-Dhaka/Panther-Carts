@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { analyzeSmsSegments } from "@/lib/sms/gsm";
 import {
   addBins,
+  applyMigration,
   checkout,
   count,
   createMigratedDb,
@@ -51,10 +52,12 @@ describe("Ticket 5 signup notifications and consent", () => {
       ) as messages(body)`,
     );
     for (const { body } of templates.rows) {
-      expect(analyzeSmsSegments(body), body).toMatchObject({
+      const analysis = analyzeSmsSegments(body);
+      expect(analysis, body).toMatchObject({
         encoding: "GSM-7",
         segments: 1,
       });
+      expect(analysis.units, body).toBeLessThanOrEqual(156);
     }
   });
 
@@ -82,6 +85,40 @@ describe("Ticket 5 signup notifications and consent", () => {
     expect(evidence.rows[0].sms_consent_version).toBe(
       "2026-08-11.transactional-v1",
     );
+  });
+
+  it("normalizes legacy MANUAL rows while backfilling a populated database", async () => {
+    const legacyDb = await createMigratedDb({
+      throughMigration: "20260811120000_admin_dashboard.sql",
+    });
+    const sessionId = await createSession(legacyDb);
+    const student = await legacyDb.query<{ id: string }>(
+      `insert into public.students
+        (session_id, full_name, panther_id, email, phone)
+       values ($1, 'Legacy Student', '900000001', 'legacy@example.edu', '+14045550777')
+       returning id`,
+      [sessionId],
+    );
+    await legacyDb.query(
+      `insert into public.notification_outbox
+        (session_id, student_id, type, body, dedupe_key)
+       values ($1, $2, 'MANUAL', 'Panther Carts: Return confirmed.', 'legacy-manual')`,
+      [sessionId, student.rows[0].id],
+    );
+
+    await applyMigration(legacyDb, "20260812120000_two_way_sms.sql");
+    const migrated = await legacyDb.query<{
+      destination_phone: string;
+      body: string;
+    }>(
+      `select destination_phone, body
+       from public.notification_outbox
+       where dedupe_key = 'legacy-manual'`,
+    );
+    expect(migrated.rows[0]).toEqual({
+      destination_phone: "+14045550777",
+      body: "Panther Carts: Return confirmed. STOP=opt out.",
+    });
   });
 
   it("creates one waiting signup message and one combined immediate-ready message", async () => {
@@ -434,16 +471,28 @@ describe("outbox claim leases and retry states", () => {
     return result.rows[0].id;
   }
 
+  it("enforces the lease-safe batch cap in PostgreSQL", async () => {
+    await expect(
+      db.query(
+        `select * from public.claim_notification_outbox('worker-a',4,120,5)`,
+      ),
+    ).rejects.toThrow(/INVALID_OUTBOX_WORKER_INPUT/);
+  });
+
   it("claims once, recovers an expired lease, and rejects a stale token", async () => {
     const id = await insertOutbox();
     const first = await db.query<{
       id: string;
       claim_token: string;
       attempts: number;
-    }>(`select * from public.claim_notification_outbox('worker-a',10,120,5)`);
+      lease_expires_at: string;
+    }>(`select * from public.claim_notification_outbox('worker-a',3,120,5)`);
     expect(first.rows).toHaveLength(1);
+    expect(new Date(first.rows[0].lease_expires_at).getTime()).toBeGreaterThan(
+      Date.now(),
+    );
     const second = await db.query(
-      `select * from public.claim_notification_outbox('worker-b',10,120,5)`,
+      `select * from public.claim_notification_outbox('worker-b',3,120,5)`,
     );
     expect(second.rows).toHaveLength(0);
 
@@ -452,7 +501,7 @@ describe("outbox claim leases and retry states", () => {
       [id],
     );
     const recovered = await db.query<{ claim_token: string; attempts: number }>(
-      `select * from public.claim_notification_outbox('worker-c',10,120,5)`,
+      `select * from public.claim_notification_outbox('worker-c',3,120,5)`,
     );
     expect(recovered.rows[0].attempts).toBe(2);
     expect(recovered.rows[0].claim_token).not.toBe(first.rows[0].claim_token);
@@ -482,7 +531,7 @@ describe("outbox claim leases and retry states", () => {
   it("backs off temporary failures, sanitizes permanent failures, and bounds attempts", async () => {
     const id = await insertOutbox();
     const claimed = await db.query<{ claim_token: string }>(
-      `select * from public.claim_notification_outbox('worker-a',10,120,5)`,
+      `select * from public.claim_notification_outbox('worker-a',3,120,5)`,
     );
     await db.query(
       `select public.complete_notification_outbox_failure($1,$2,true,'temporary secret !@#',5)`,
@@ -508,7 +557,7 @@ describe("outbox claim leases and retry states", () => {
       [id],
     );
     const maxed = await db.query(
-      `select * from public.claim_notification_outbox('worker-b',10,120,5)`,
+      `select * from public.claim_notification_outbox('worker-b',3,120,5)`,
     );
     expect(maxed.rows).toHaveLength(0);
     const final = await db.query<{ status: string }>(
@@ -529,7 +578,7 @@ describe("outbox claim leases and retry states", () => {
     );
 
     const claimed = await db.query(
-      `select * from public.claim_notification_outbox('worker-b',10,120,5)`,
+      `select * from public.claim_notification_outbox('worker-b',3,120,5)`,
     );
     expect(claimed.rows).toHaveLength(0);
     const final = await db.query<{ status: string; last_error: string }>(

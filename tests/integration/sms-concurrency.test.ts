@@ -232,7 +232,7 @@ describeDb("Ticket 5 forced SMS concurrency", () => {
     try {
       await workerA.query("begin");
       const claimA = await workerA.query(
-        `select * from public.claim_notification_outbox('worker-a',10,120,5)`,
+        `select * from public.claim_notification_outbox('worker-a',3,120,5)`,
       );
       expect(claimA.rows.map((row) => row.id)).toContain(outboxId);
 
@@ -240,7 +240,7 @@ describeDb("Ticket 5 forced SMS concurrency", () => {
       // claim query. B must skip the locked row rather than wait or claim it.
       await workerB.query("begin");
       const claimB = await workerB.query(
-        `select * from public.claim_notification_outbox('worker-b',10,120,5)`,
+        `select * from public.claim_notification_outbox('worker-b',3,120,5)`,
       );
       expect(claimB.rows.map((row) => row.id)).not.toContain(outboxId);
 
@@ -260,6 +260,56 @@ describeDb("Ticket 5 forced SMS concurrency", () => {
         }
         client.release();
       }
+    }
+  });
+
+  it("skips a locked max-attempt row while claiming other eligible work", async () => {
+    const pool = getPool();
+    const exhausted = await pool.query(
+      `insert into public.notification_outbox
+        (type,body,dedupe_key,destination_phone,status,attempts,available_at)
+       values (
+         'TIME','Panther Carts: Exhausted. STOP=opt out.',$1,
+         '+14045550123','PENDING',5,
+         timestamp with time zone '1999-01-01 00:00:00+00'
+       ) returning id`,
+      [randomUUID()],
+    );
+    const eligible = await pool.query(
+      `insert into public.notification_outbox
+        (type,body,dedupe_key,destination_phone,available_at)
+       values (
+         'TIME','Panther Carts: Eligible. STOP=opt out.',$1,
+         '+14045550124',timestamp with time zone '2000-01-01 00:00:00+00'
+       ) returning id`,
+      [randomUUID()],
+    );
+    const exhaustedId = exhausted.rows[0].id as string;
+    const eligibleId = eligible.rows[0].id as string;
+    const locker = await pool.connect();
+    try {
+      await locker.query("begin");
+      await locker.query(
+        `select id from public.notification_outbox where id=$1 for update`,
+        [exhaustedId],
+      );
+
+      const claim = await pool.query(
+        `select * from public.claim_notification_outbox('worker-b',3,120,5)`,
+      );
+      expect(claim.rows.map((row) => row.id)).toContain(eligibleId);
+      const stillPending = await locker.query(
+        `select status::text from public.notification_outbox where id=$1`,
+        [exhaustedId],
+      );
+      expect(stillPending.rows[0].status).toBe("PENDING");
+    } finally {
+      try {
+        await locker.query("rollback");
+      } catch {
+        // Ignore cleanup after a failed transaction.
+      }
+      locker.release();
     }
   });
 });

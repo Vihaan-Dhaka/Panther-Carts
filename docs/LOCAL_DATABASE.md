@@ -169,8 +169,9 @@ so a green run can never mean "the important tests were silently skipped".
 - **PGlite suites** (`tests/integration/pglite-*`) always run, in-process, with
   no server — they rebuild the schema from the real migrations. Single
   connection, so they prove logic and constraints, not lock timing.
-- **Real-PostgreSQL suites** (`queue-engine.test.ts`, `concurrency.test.ts`)
-  need this server. They prove the session advisory lock genuinely blocks
-  concurrent transactions, which cannot be simulated in-process.
+- **Real-PostgreSQL suites** (`queue-engine.test.ts`, `concurrency.test.ts`, and
+  `sms-concurrency.test.ts`) need this server. They prove the session advisory
+  locks and outbox row locks genuinely block or skip concurrent transactions,
+  which cannot be simulated in-process.
 
 See `docs/DATABASE.md` for the schema, locking, and idempotency design.

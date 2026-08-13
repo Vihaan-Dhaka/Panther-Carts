@@ -45,7 +45,7 @@ export function computeTwilioSignature(
   let payload = exactUrl;
   for (const key of Object.keys(parameters).sort()) {
     const value = parameters[key];
-    const values = Array.isArray(value) ? [...new Set(value)].sort() : [value];
+    const values = Array.isArray(value) ? [...value].sort() : [value];
     for (const item of values) payload += `${key}${item}`;
   }
   return createHmac("sha1", authToken).update(payload, "utf8").digest("base64");

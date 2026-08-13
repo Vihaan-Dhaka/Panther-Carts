@@ -83,11 +83,12 @@ admin.
   identifiers are provider-scoped and idempotent.
 - Outbound messages use a database-backed claim/lease outbox with bounded
   attempts and retry backoff. Simultaneous healthy workers cannot claim the
-  same row. A worker claims at most three rows so the complete sequential batch,
-  including a safety margin, fits inside its lease. Provider requests time out
-  before the lease expires, and a rejected completion is reported as
-  unconfirmed rather than sent. A crash after
-  provider acceptance but before the SENT commit can still cause a duplicate
+  same row. PostgreSQL and the worker cap claims at three rows; provider and
+  database requests have bounded deadlines, and the worker does not send a row
+  unless its authoritative lease expiry retains enough delivery and completion
+  budget plus a safety margin. A rejected or timed-out SENT completion is
+  reported as unconfirmed rather than sent. A failure after provider acceptance
+  but before confirmation of the SENT commit can still cause a duplicate
   on lease recovery; the system does not claim perfect exactly-once delivery
   across that network boundary.
 

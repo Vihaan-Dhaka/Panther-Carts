@@ -51,23 +51,6 @@ alter table public.notification_outbox
     )
   );
 
-update public.notification_outbox o
-set destination_phone = s.phone
-from public.students s
-where s.id = o.student_id
-  and s.session_id = o.session_id
-  and o.destination_phone is null;
-
-alter table public.notification_outbox
-  alter column destination_phone set not null;
-
-drop index public.notification_outbox_status_idx;
-create index notification_outbox_delivery_idx
-  on public.notification_outbox (status, available_at, created_at, id);
-create index notification_outbox_expired_lease_idx
-  on public.notification_outbox (lease_expires_at, id)
-  where status = 'PROCESSING';
-
 -- Preserve one canonical destination on every provider-independent intent.
 create or replace function public.notification_outbox_set_destination()
 returns trigger
@@ -95,9 +78,28 @@ end;
 $$;
 
 create trigger notification_outbox_destination_trigger
-before insert or update of student_id, session_id, destination_phone
+before insert or update of student_id, session_id, destination_phone, type, body
 on public.notification_outbox
 for each row execute function public.notification_outbox_set_destination();
+
+-- Run the populated-data backfill through the trigger so legacy MANUAL rows
+-- receive the same required opt-out disclosure as newly-created rows.
+update public.notification_outbox o
+set destination_phone = s.phone
+from public.students s
+where s.id = o.student_id
+  and s.session_id = o.session_id
+  and o.destination_phone is null;
+
+alter table public.notification_outbox
+  alter column destination_phone set not null;
+
+drop index public.notification_outbox_status_idx;
+create index notification_outbox_delivery_idx
+  on public.notification_outbox (status, available_at, created_at, id);
+create index notification_outbox_expired_lease_idx
+  on public.notification_outbox (lease_expires_at, id)
+  where status = 'PROCESSING';
 
 -- Provider webhook identifiers are retained without message bodies or phone
 -- numbers. The command/outcome fields are enough to prove idempotency and to
@@ -393,7 +395,8 @@ begin
         body = v_body,
         dedupe_key = 'INITIAL:' || v_entry.id::text,
         destination_phone = v_phone
-    where dedupe_key = 'READY:' || v_reservation_id::text;
+    where dedupe_key = 'READY:' || v_reservation_id::text
+      and session_id = p_session_id;
     get diagnostics v_updated = row_count;
     if v_updated = 0 then
       insert into public.notification_outbox (
@@ -948,7 +951,8 @@ begin
         );
         v_outcome := v_cancel->>'outcome';
         select * into v_outbox from public.notification_outbox
-        where id = (v_cancel->>'outbox_id')::uuid;
+        where id = (v_cancel->>'outbox_id')::uuid
+          and session_id = v_entry.session_id;
       exception when others then
         get stacked diagnostics v_error = message_text;
         if position('PANTHER_CARTS:RESERVATION_NOT_ACTIVE' in v_error) > 0
@@ -1006,7 +1010,8 @@ returns table (
   destination_phone text,
   body text,
   attempts integer,
-  claim_token uuid
+  claim_token uuid,
+  lease_expires_at timestamptz
 )
 language plpgsql
 security definer
@@ -1014,12 +1019,22 @@ set search_path = ''
 as $$
 begin
   if p_worker_id is null or btrim(p_worker_id) = ''
-     or p_limit is null or p_limit < 1 or p_limit > 100
+     or p_limit is null or p_limit < 1 or p_limit > 3
      or p_lease_seconds is null or p_lease_seconds < 30 or p_lease_seconds > 900
      or p_max_attempts is null or p_max_attempts < 1 or p_max_attempts > 20 then
     raise exception 'PANTHER_CARTS:INVALID_OUTBOX_WORKER_INPUT';
   end if;
 
+  with exhausted as (
+    select o.id
+    from public.notification_outbox o
+    where o.attempts >= p_max_attempts
+      and (
+        o.status = 'PENDING'
+        or (o.status = 'PROCESSING' and o.lease_expires_at <= now())
+      )
+    for update skip locked
+  )
   update public.notification_outbox o
   set status = 'FAILED',
       last_error = case
@@ -1030,11 +1045,8 @@ begin
       claimed_at = null,
       lease_expires_at = null,
       claim_token = null
-  where o.attempts >= p_max_attempts
-    and (
-      o.status = 'PENDING'
-      or (o.status = 'PROCESSING' and o.lease_expires_at <= now())
-    );
+  from exhausted e
+  where o.id = e.id;
 
   return query
   with candidates as (
@@ -1058,9 +1070,11 @@ begin
         last_error = null
     from candidates c
     where o.id = c.id
-    returning o.id, o.destination_phone, o.body, o.attempts, o.claim_token
+    returning o.id, o.destination_phone, o.body, o.attempts, o.claim_token,
+      o.lease_expires_at
   )
-  select c.id, c.destination_phone, c.body, c.attempts, c.claim_token
+  select c.id, c.destination_phone, c.body, c.attempts, c.claim_token,
+    c.lease_expires_at
   from claimed c
   order by c.id;
 end;

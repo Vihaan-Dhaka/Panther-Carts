@@ -16,14 +16,46 @@ export type OutboxDatabaseClient = Pick<SupabaseClient, "rpc">;
 const MAX_ATTEMPTS = 5;
 export const OUTBOX_LEASE_SECONDS = 120;
 export const OUTBOX_LEASE_SAFETY_MS = 15_000;
+export const OUTBOX_DATABASE_REQUEST_TIMEOUT_MS = 2_000;
 export const MAX_OUTBOX_BATCH_SIZE = Math.max(
   1,
   Math.floor(
-    (OUTBOX_LEASE_SECONDS * 1_000 - OUTBOX_LEASE_SAFETY_MS) /
-      SMS_PROVIDER_REQUEST_TIMEOUT_MS,
+    (OUTBOX_LEASE_SECONDS * 1_000 -
+      OUTBOX_LEASE_SAFETY_MS -
+      OUTBOX_DATABASE_REQUEST_TIMEOUT_MS) /
+      (SMS_PROVIDER_REQUEST_TIMEOUT_MS + OUTBOX_DATABASE_REQUEST_TIMEOUT_MS),
   ),
 );
 const DEFAULT_BATCH_SIZE = MAX_OUTBOX_BATCH_SIZE;
+
+type OutboxRpcResponse = { data: unknown; error: unknown };
+type OutboxRpcRequest = PromiseLike<OutboxRpcResponse> & {
+  abortSignal?: (signal: AbortSignal) => PromiseLike<OutboxRpcResponse>;
+};
+
+async function callOutboxRpc(
+  client: OutboxDatabaseClient,
+  functionName: string,
+  args: Record<string, unknown>,
+): Promise<OutboxRpcResponse> {
+  type RpcInvoker = (
+    name: string,
+    input: Record<string, unknown>,
+  ) => OutboxRpcRequest;
+  const request = (client.rpc as unknown as RpcInvoker)(functionName, args);
+  const signal = AbortSignal.timeout(OUTBOX_DATABASE_REQUEST_TIMEOUT_MS);
+  if (typeof request.abortSignal === "function") {
+    return await request.abortSignal(signal);
+  }
+  return await Promise.race([
+    Promise.resolve(request),
+    new Promise<never>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    }),
+  ]);
+}
 
 export type OutboxDrainResult = {
   claimed: number;
@@ -50,20 +82,25 @@ async function completeFailure(
     code: string;
   },
 ): Promise<boolean> {
-  const { data, error } = await client.rpc(
-    "complete_notification_outbox_failure",
-    {
-      p_outbox_id: input.id,
-      p_claim_token: input.claimToken,
-      p_retryable: input.retryable,
-      p_error: input.code,
-      p_max_attempts: MAX_ATTEMPTS,
-    },
-  );
-  if (error) return false;
-  const parsed = outboxCompletionSchema.safeParse(data);
-  if (!parsed.success) return false;
-  return parsed.data;
+  try {
+    const { data, error } = await callOutboxRpc(
+      client,
+      "complete_notification_outbox_failure",
+      {
+        p_outbox_id: input.id,
+        p_claim_token: input.claimToken,
+        p_retryable: input.retryable,
+        p_error: input.code,
+        p_max_attempts: MAX_ATTEMPTS,
+      },
+    );
+    if (error) return false;
+    const parsed = outboxCompletionSchema.safeParse(data);
+    if (!parsed.success) return false;
+    return parsed.data;
+  } catch {
+    return false;
+  }
 }
 
 export async function drainSmsOutbox(
@@ -75,12 +112,18 @@ export async function drainSmsOutbox(
     MAX_OUTBOX_BATCH_SIZE,
     Math.max(1, Math.floor(options.batchSize ?? DEFAULT_BATCH_SIZE)),
   );
-  const { data, error } = await client.rpc("claim_notification_outbox", {
-    p_worker_id: randomUUID(),
-    p_limit: batchSize,
-    p_lease_seconds: OUTBOX_LEASE_SECONDS,
-    p_max_attempts: MAX_ATTEMPTS,
-  });
+  let claim: OutboxRpcResponse;
+  try {
+    claim = await callOutboxRpc(client, "claim_notification_outbox", {
+      p_worker_id: randomUUID(),
+      p_limit: batchSize,
+      p_lease_seconds: OUTBOX_LEASE_SECONDS,
+      p_max_attempts: MAX_ATTEMPTS,
+    });
+  } catch {
+    throw new Error("Outbox claim failed");
+  }
+  const { data, error } = claim;
   if (error) throw new Error("Outbox claim failed");
   const rows = z.array(claimedOutboxRowSchema).safeParse(data);
   if (!rows.success) throw new Error("Outbox claim failed");
@@ -93,6 +136,24 @@ export async function drainSmsOutbox(
     unconfirmed: 0,
   };
   for (const row of rows.data) {
+    const remainingLeaseMs = Date.parse(row.lease_expires_at) - Date.now();
+    if (
+      remainingLeaseMs <
+      SMS_PROVIDER_REQUEST_TIMEOUT_MS +
+        OUTBOX_DATABASE_REQUEST_TIMEOUT_MS +
+        OUTBOX_LEASE_SAFETY_MS
+    ) {
+      const completed = await completeFailure(client, {
+        id: row.id,
+        claimToken: row.claim_token,
+        retryable: true,
+        code: "LEASE_BUDGET_EXHAUSTED",
+      });
+      if (completed && row.attempts < MAX_ATTEMPTS) result.retried += 1;
+      else if (completed) result.failed += 1;
+      else result.unconfirmed += 1;
+      continue;
+    }
     try {
       try {
         assertSingleGsm7Segment(row.body);
@@ -104,11 +165,21 @@ export async function drainSmsOutbox(
         to: row.destination_phone,
         body: row.body,
       });
-      const completion = await client.rpc("complete_notification_outbox_sent", {
-        p_outbox_id: row.id,
-        p_claim_token: row.claim_token,
-        p_provider_message_id: sent.providerMessageId,
-      });
+      let completion: OutboxRpcResponse;
+      try {
+        completion = await callOutboxRpc(
+          client,
+          "complete_notification_outbox_sent",
+          {
+            p_outbox_id: row.id,
+            p_claim_token: row.claim_token,
+            p_provider_message_id: sent.providerMessageId,
+          },
+        );
+      } catch {
+        result.unconfirmed += 1;
+        continue;
+      }
       const completed = outboxCompletionSchema.safeParse(completion.data);
       if (completion.error || !completed.success || !completed.data) {
         // Provider acceptance is irreversible. Never report SENT or convert

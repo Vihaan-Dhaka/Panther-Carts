@@ -3,6 +3,7 @@ import { SmsProviderError } from "@/lib/sms/errors";
 import {
   drainSmsOutbox,
   MAX_OUTBOX_BATCH_SIZE,
+  OUTBOX_DATABASE_REQUEST_TIMEOUT_MS,
   OUTBOX_LEASE_SAFETY_MS,
   OUTBOX_LEASE_SECONDS,
 } from "@/lib/sms/outbox";
@@ -17,6 +18,7 @@ const row = {
   body: "Panther Carts: Test. STOP=opt out.",
   attempts: 1,
   claim_token: "6c395a6e-87aa-4932-b1f0-1dd506bfe15d",
+  lease_expires_at: "2099-01-01T00:00:00.000Z",
 };
 
 function clientWith(rows = [row]) {
@@ -42,9 +44,97 @@ describe("SMS outbox worker", () => {
   it("bounds the complete sequential batch comfortably inside the lease", () => {
     expect(
       MAX_OUTBOX_BATCH_SIZE * SMS_PROVIDER_REQUEST_TIMEOUT_MS +
+        (MAX_OUTBOX_BATCH_SIZE + 1) * OUTBOX_DATABASE_REQUEST_TIMEOUT_MS +
         OUTBOX_LEASE_SAFETY_MS,
     ).toBeLessThanOrEqual(OUTBOX_LEASE_SECONDS * 1_000);
     expect(MAX_OUTBOX_BATCH_SIZE).toBe(3);
+  });
+
+  it("returns an unsent row to retry when its remaining lease cannot cover delivery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T12:00:00.000Z"));
+    try {
+      const minimumSendBudget =
+        SMS_PROVIDER_REQUEST_TIMEOUT_MS +
+        OUTBOX_DATABASE_REQUEST_TIMEOUT_MS +
+        OUTBOX_LEASE_SAFETY_MS;
+      const expiringRow = {
+        ...row,
+        lease_expires_at: new Date(
+          Date.now() + minimumSendBudget - 1,
+        ).toISOString(),
+      };
+      const { client, rpc } = clientWith([expiringRow]);
+      const send = vi.fn();
+
+      await expect(drainSmsOutbox(client, provider(send))).resolves.toEqual({
+        claimed: 1,
+        sent: 0,
+        retried: 1,
+        failed: 0,
+        unconfirmed: 0,
+      });
+      expect(send).not.toHaveBeenCalled();
+      expect(rpc).toHaveBeenCalledWith(
+        "complete_notification_outbox_failure",
+        expect.objectContaining({
+          p_retryable: true,
+          p_error: "LEASE_BUDGET_EXHAUSTED",
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled sent-completion RPC and reports provider acceptance as unconfirmed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T12:00:00.000Z"));
+    try {
+      const { client, rpc } = clientWith([
+        {
+          ...row,
+          lease_expires_at: new Date(
+            Date.now() + OUTBOX_LEASE_SECONDS * 1_000,
+          ).toISOString(),
+        },
+      ]);
+      rpc.mockImplementation(async (name: string) => {
+        if (name === "claim_notification_outbox") {
+          return {
+            data: [
+              {
+                ...row,
+                lease_expires_at: new Date(
+                  Date.now() + OUTBOX_LEASE_SECONDS * 1_000,
+                ).toISOString(),
+              },
+            ],
+            error: null,
+          };
+        }
+        if (name === "complete_notification_outbox_sent") {
+          return await new Promise(() => {});
+        }
+        return { data: true, error: null };
+      });
+      const drain = drainSmsOutbox(
+        client,
+        provider(vi.fn().mockResolvedValue({ providerMessageId: "message-1" })),
+      );
+
+      await vi.advanceTimersByTimeAsync(OUTBOX_DATABASE_REQUEST_TIMEOUT_MS + 1);
+      await expect(drain).resolves.toMatchObject({
+        sent: 0,
+        unconfirmed: 1,
+      });
+      expect(rpc).not.toHaveBeenCalledWith(
+        "complete_notification_outbox_failure",
+        expect.anything(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("caps a caller-requested batch at the lease-safe maximum", async () => {

@@ -21,8 +21,15 @@ const MIGRATIONS_DIR = path.resolve(
 
 export type Db = PGlite;
 
+export async function applyMigration(db: Db, fileName: string): Promise<void> {
+  if (!/^\d{14}_[a-z0-9_]+\.sql$/.test(fileName)) {
+    throw new Error("Invalid migration filename");
+  }
+  await db.exec(readFileSync(path.join(MIGRATIONS_DIR, fileName), "utf8"));
+}
+
 export async function createMigratedDb(
-  options: { createServiceRole?: boolean } = {},
+  options: { createServiceRole?: boolean; throughMigration?: string } = {},
 ): Promise<Db> {
   const db = new PGlite();
   if (options.createServiceRole) {
@@ -38,7 +45,8 @@ export async function createMigratedDb(
     .filter((f) => f.endsWith(".sql"))
     .sort();
   for (const file of files) {
-    await db.exec(readFileSync(path.join(MIGRATIONS_DIR, file), "utf8"));
+    await applyMigration(db, file);
+    if (file === options.throughMigration) break;
   }
   return db;
 }

@@ -185,10 +185,11 @@ rental/reservation impossible.
 
 ## Ticket 5 outbox claim/lease
 
-`claim_notification_outbox` atomically selects eligible PENDING rows and
-expired PROCESSING leases with `FOR UPDATE SKIP LOCKED`, increments attempts,
-and writes a new claim token and bounded lease. Completion requires that exact
-token, so a recovered row rejects a stale worker's commit. Temporary failures
+`claim_notification_outbox` atomically selects at most three eligible PENDING
+rows and expired PROCESSING leases with `FOR UPDATE SKIP LOCKED`, increments
+attempts, and writes a new claim token and bounded lease. It returns the
+authoritative lease expiry with every row. Completion requires that exact token,
+so a recovered row rejects a stale worker's commit. Temporary failures
 return to PENDING with exponential backoff capped at one hour; permanent or
 maximum-attempt failures become FAILED. `last_error` stores only a bounded,
 sanitized error token. An expired final-attempt PROCESSING lease records
@@ -198,14 +199,17 @@ acceptance is known but the claim token is stale, the row preserves the first
 unconfirmed provider message ID and detection timestamp without overwriting the
 current owner's delivery state.
 
-The application caps each claim at three rows. Three sequential 30-second
-provider deadlines plus a 15-second safety margin fit within the 120-second
-lease; callers cannot request a larger batch.
+PostgreSQL and the application cap each claim at three rows. Three sequential
+30-second provider deadlines, four two-second database RPC deadlines, and a
+15-second safety margin fit within the 120-second lease. Before every provider
+call, the worker verifies that the returned lease expiry still has enough time
+for delivery, completion, and the safety margin; otherwise it returns that row
+to retry without sending.
 
 This prevents simultaneous healthy workers from sending the same claimed row.
 It cannot make the external provider boundary exactly-once: if the provider
-accepts a message and the process crashes before
-`complete_notification_outbox_sent` commits, lease recovery can send it again.
+accepts a message and the process cannot confirm
+`complete_notification_outbox_sent` before lease recovery, it can be sent again.
 Provider message IDs are stored only after acceptance.
 The worker treats a false completion result as unconfirmed, never as SENT.
 
