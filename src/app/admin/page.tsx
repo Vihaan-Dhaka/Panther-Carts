@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { connection } from "next/server";
+import { redirect } from "next/navigation";
 import { AdminDashboard } from "@/components/admin/admin-dashboard";
+import { AuthorizationError, requireAdmin } from "@/lib/auth/admin";
 import { getAdminDashboardSnapshot } from "@/lib/admin/dashboard";
 import type { AdminDashboardSnapshot } from "@/lib/admin/types";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -11,10 +13,17 @@ import {
   endSessionAction,
   notifyRentalAction,
   startSessionAction,
+  logoutAdminAction,
 } from "./actions";
 
 export default async function AdminPage() {
   await connection();
+  try {
+    await requireAdmin();
+  } catch (error) {
+    if (error instanceof AuthorizationError) redirect("/admin/login");
+    throw error;
+  }
   let snapshot: AdminDashboardSnapshot | null = null;
   let loadError: string | null = null;
   try {
@@ -61,6 +70,16 @@ export default async function AdminPage() {
 
   return (
     <main className="min-h-full flex-1 bg-slate-100 px-4 py-8 sm:px-6 lg:py-12">
+      <div className="mx-auto mb-4 flex max-w-[96rem] justify-end">
+        <form action={logoutAdminAction}>
+          <button
+            type="submit"
+            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-800"
+          >
+            Sign out
+          </button>
+        </form>
+      </div>
       <AdminDashboard
         snapshot={snapshot}
         createSessionAction={createSessionAction}

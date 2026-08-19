@@ -38,9 +38,9 @@ export type StudentSignupAvailability =
   | { available: false; message: string };
 
 const INVALID_LINK_MESSAGE =
-  "This signup link is invalid. Ask staff for the current signup link.";
+  "This signup link is invalid or inactive. Ask staff for the current signup link.";
 const INACTIVE_SESSION_MESSAGE =
-  "This signup session is not active. Ask staff if signups are open.";
+  "This signup link is invalid or inactive. Ask staff for the current signup link.";
 const UNEXPECTED_MESSAGE =
   "We could not complete your signup right now. Please try again.";
 

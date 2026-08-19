@@ -266,8 +266,8 @@ function AccessDetails({
   link,
 }: {
   label: string;
-  code: string;
-  link: string;
+  code: string | null;
+  link: string | null;
 }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -275,17 +275,23 @@ function AccessDetails({
       <dl className="mt-3 grid gap-2 text-sm">
         <div>
           <dt className="font-semibold text-slate-600">Code</dt>
-          <dd className="mt-1 break-all font-mono text-slate-950">{code}</dd>
+          <dd className="mt-1 break-all font-mono text-slate-950">
+            {code ?? "Unavailable for this legacy session"}
+          </dd>
         </div>
         <div>
           <dt className="font-semibold text-slate-600">Link</dt>
           <dd className="mt-1 break-all">
-            <a
-              className="font-medium text-sky-700 underline decoration-sky-300 underline-offset-2"
-              href={link}
-            >
-              {link}
-            </a>
+            {link ? (
+              <a
+                className="font-medium text-sky-700 underline decoration-sky-300 underline-offset-2"
+                href={link}
+              >
+                {link}
+              </a>
+            ) : (
+              "Unavailable for this legacy session"
+            )}
           </dd>
         </div>
       </dl>
@@ -842,7 +848,7 @@ export function AdminDashboard(props: AdminDashboardProps) {
                 />
                 <AccessDetails
                   label="Staff access"
-                  code={session.staffCode}
+                  code={session.staffAccessCode}
                   link={session.staffLink}
                 />
               </div>

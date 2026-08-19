@@ -1,4 +1,6 @@
 import { StudentSignupForm } from "@/components/student/signup-form";
+import { headers } from "next/headers";
+import { consumeRateLimit, requestIp } from "@/lib/auth/rate-limit";
 import { getStudentSignupAvailability } from "@/lib/queue/student-signup";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { submitStudentSignup } from "./actions";
@@ -10,10 +12,21 @@ export default async function StudentSessionPage({
   let availability;
 
   try {
-    availability = await getStudentSignupAvailability(
-      createAdminClient(),
-      sessionCode,
+    const client = createAdminClient();
+    const limit = await consumeRateLimit(
+      client,
+      "student_code_check",
+      requestIp(await headers()),
+      sessionCode.slice(0, 200),
     );
+    if (!limit.allowed) {
+      availability = {
+        available: false as const,
+        message: "This signup link is unavailable. Wait and try again.",
+      };
+    } else {
+      availability = await getStudentSignupAvailability(client, sessionCode);
+    }
   } catch {
     availability = {
       available: false as const,

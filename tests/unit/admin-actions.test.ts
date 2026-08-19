@@ -3,11 +3,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   createSession: vi.fn(),
+  requireAdmin: vi.fn(async () => ({ userId: "admin-user" })),
+  consumeRateLimit: vi.fn(async () => ({
+    allowed: true,
+    remaining: 100,
+    retryAfterSeconds: 0,
+  })),
+  createAdminClient: vi.fn(() => ({})),
 }));
 
 vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
 vi.mock("@/lib/supabase/admin", () => ({
-  createAdminClient: vi.fn(() => ({})),
+  createAdminClient: mocks.createAdminClient,
+}));
+vi.mock("@/lib/auth/admin", () => ({
+  AuthorizationError: class AuthorizationError extends Error {},
+  requireAdmin: mocks.requireAdmin,
+}));
+vi.mock("@/lib/auth/rate-limit", () => ({
+  consumeRateLimit: mocks.consumeRateLimit,
 }));
 vi.mock("@/lib/admin/dashboard", () => ({
   executeAddAdminBins: vi.fn(),
@@ -50,5 +64,13 @@ describe("admin Server Action refresh behavior", () => {
       fieldErrors: {},
     });
     expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("never creates a service-role client when admin verification fails", async () => {
+    mocks.requireAdmin.mockRejectedValueOnce(new Error("unverified cookie"));
+    const result = await createSessionAction(null, new FormData());
+    expect(result.status).toBe("error");
+    expect(mocks.createAdminClient).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
   });
 });

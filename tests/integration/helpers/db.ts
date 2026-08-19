@@ -100,16 +100,19 @@ export async function createSession(
   } = options;
   const studentCode = `stu_${randomUUID().slice(0, 8)}`;
   const staffCode = `stf_${randomUUID().slice(0, 8)}`;
+  const staffLinkHash = randomUUID().replaceAll("-", "").repeat(2);
   const res = await client.query(
     `insert into public.sessions
-       (name, status, student_code, staff_code, rental_duration_minutes, pickup_window_minutes, started_at)
-     values ($1, $2, $3, $4, $5, $6, now())
+       (name, status, student_code, staff_code, staff_link_hash,
+        rental_duration_minutes, pickup_window_minutes, started_at)
+     values ($1, $2, $3, $4, $5, $6, $7, now())
      returning id`,
     [
       "Test Session",
       status,
       studentCode,
       staffCode,
+      staffLinkHash,
       rentalDurationMinutes,
       pickupWindowMinutes,
     ],

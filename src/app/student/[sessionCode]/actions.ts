@@ -1,5 +1,7 @@
 "use server";
 
+import { headers } from "next/headers";
+import { consumeRateLimit, requestIp } from "@/lib/auth/rate-limit";
 import {
   executeStudentSignup,
   preserveStudentSignupValues,
@@ -21,7 +23,23 @@ export async function submitStudentSignup(
   };
 
   try {
-    return await executeStudentSignup(createAdminClient(), sessionCode, input);
+    const client = createAdminClient();
+    const limit = await consumeRateLimit(
+      client,
+      "student_signup",
+      requestIp(await headers()),
+      sessionCode.slice(0, 200),
+    );
+    if (!limit.allowed) {
+      return {
+        status: "error",
+        values: preserveStudentSignupValues(input),
+        fieldErrors: {},
+        formError:
+          "Too many signup attempts were submitted. Wait and try again.",
+      };
+    }
+    return await executeStudentSignup(client, sessionCode, input);
   } catch {
     return {
       status: "error",

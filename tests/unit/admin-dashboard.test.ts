@@ -11,6 +11,9 @@ import {
 } from "@/lib/admin/dashboard";
 import { ADMIN_VIEW_OPTIONS, classifyRentalStatus } from "@/lib/admin/types";
 
+process.env.PANTHER_AUTH_SECRET =
+  "unit-test-auth-secret-at-least-32-characters";
+
 const SESSION_ID = "9ce0f6b4-63b0-48b0-bb5b-0fe117e640a9";
 const RENTAL_ID = "81bbf354-a557-4d22-9da0-6574416c62f1";
 const KEY = "7b830507-034f-4746-9a67-f7e9184d40bc";
@@ -40,6 +43,8 @@ function sessionRow(overrides: Record<string, unknown> = {}) {
     status: "ACTIVE",
     student_code: "signup-code",
     staff_code: "staff-code",
+    staff_access_code_ciphertext: null,
+    staff_credential_version: "legacy-sha256",
     rental_duration_minutes: 60,
     pickup_window_minutes: 10,
     created_at: NOW,
@@ -167,9 +172,9 @@ describe("admin dashboard data layer", () => {
     expect(JSON.stringify(snapshot)).not.toContain(SESSION_ID);
     expect(snapshot.session).toMatchObject({
       studentCode: "signup-code",
-      staffCode: "staff-code",
+      staffAccessCode: null,
       studentLink: "/student/signup-code",
-      staffLink: "/staff/staff-code",
+      staffLink: null,
       status: "ACTIVE",
     });
   });
@@ -226,6 +231,8 @@ describe("admin dashboard data layer", () => {
         status: "DRAFT",
         student_code: "signup-generated",
         staff_code: "staff-generated",
+        staff_access_code_ciphertext: null,
+        staff_credential_version: "legacy-sha256",
         started_at: null,
       },
       idempotent_replay: false,
@@ -246,8 +253,10 @@ describe("admin dashboard data layer", () => {
       p_pickup_window_minutes: 10,
       p_idempotency_key: KEY,
     });
-    expect(args).not.toHaveProperty("p_student_code");
-    expect(args).not.toHaveProperty("p_staff_code");
+    expect(args.p_student_code).toMatch(/^signup-[a-f0-9]{32}$/);
+    expect(args.p_staff_link_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(args.p_staff_access_code_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(args.p_staff_link_ciphertext).not.toMatch(/staff-[a-f0-9]{32}/);
 
     const invalid = await executeCreateAdminSession(fake.client, {
       name: "",

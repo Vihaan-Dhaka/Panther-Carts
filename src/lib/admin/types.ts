@@ -16,9 +16,9 @@ export type AdminSessionDto = {
   name: string;
   status: AdminSessionStatus;
   studentCode: string;
-  staffCode: string;
+  staffAccessCode: string | null;
   studentLink: string;
-  staffLink: string;
+  staffLink: string | null;
   rentalDurationMinutes: number;
   pickupWindowMinutes: number;
   createdAt: string;

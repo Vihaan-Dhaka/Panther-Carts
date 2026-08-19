@@ -14,6 +14,21 @@ import {
 
 let db: Db;
 
+function createArgs(name: string, key: string) {
+  const hash = () => randomUUID().replaceAll("-", "").repeat(2);
+  return [
+    name,
+    60,
+    10,
+    key,
+    `signup-${randomUUID().replaceAll("-", "")}`,
+    `v1.${randomUUID()}.link`,
+    hash(),
+    `v1.${randomUUID()}.code`,
+    hash(),
+  ];
+}
+
 beforeAll(async () => {
   db = await createMigratedDb();
 });
@@ -31,12 +46,10 @@ describe("Ticket 4 admin PostgreSQL functions", () => {
         };
         idempotent_replay: boolean;
       };
-    }>(`select public.admin_create_session($1, $2, $3, $4) as result`, [
-      "Ticket 4",
-      60,
-      10,
-      key,
-    ]);
+    }>(
+      `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9) as result`,
+      createArgs("Ticket 4", key),
+    );
     const sessionId = first.rows[0].result.session.id;
     expect(first.rows[0].result).toMatchObject({
       session: {
@@ -47,44 +60,39 @@ describe("Ticket 4 admin PostgreSQL functions", () => {
     expect(first.rows[0].result.session.student_code).toMatch(
       /^signup-[a-f0-9]{32}$/,
     );
-    expect(first.rows[0].result.session.staff_code).toMatch(
-      /^staff-[a-f0-9]{32}$/,
-    );
+    expect(first.rows[0].result.session.staff_code).toMatch(/^v1\./);
     expect(first.rows[0].result.session.student_code).not.toContain(key);
     expect(first.rows[0].result.session.staff_code).not.toContain(key);
 
     const replay = await db.query<{ result: { idempotent_replay: boolean } }>(
-      `select public.admin_create_session($1, $2, $3, $4) as result`,
-      ["Ticket 4", 60, 10, key],
+      `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9) as result`,
+      createArgs("Ticket 4", key),
     );
     expect(replay.rows[0].result.idempotent_replay).toBe(true);
     await expect(
-      db.query(`select public.admin_create_session($1, $2, $3, $4)`, [
-        "Different request",
-        60,
-        10,
-        key,
-      ]),
+      db.query(
+        `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        createArgs("Different request", key),
+      ),
     ).rejects.toThrow(/IDEMPOTENCY_CONFLICT/);
     await expect(
-      db.query(`select public.admin_create_session($1, $2, $3, $4)`, [
-        "Second browser tab",
-        60,
-        10,
-        randomUUID(),
-      ]),
+      db.query(
+        `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        createArgs("Second browser tab", randomUUID()),
+      ),
     ).rejects.toThrow(/SESSION_ALREADY_OPEN/);
     await expect(
       db.query(
         `insert into public.sessions (
-           name, status, student_code, staff_code,
+           name, status, student_code, staff_code, staff_link_hash,
            rental_duration_minutes, pickup_window_minutes,
            creation_idempotency_key
-         ) values ($1, 'DRAFT', $2, $3, 60, 10, $4)`,
+         ) values ($1, 'DRAFT', $2, $3, $4, 60, 10, $5)`,
         [
           "Bypass attempt",
           `signup-${randomUUID()}`,
           `staff-${randomUUID()}`,
+          randomUUID().replaceAll("-", "").repeat(2),
           randomUUID(),
         ],
       ),

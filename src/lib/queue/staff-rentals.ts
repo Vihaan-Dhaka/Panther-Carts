@@ -56,15 +56,15 @@ function databaseFailure(): QueueOperationError {
   return new QueueOperationError(null);
 }
 
-/** Resolve a staff access code for a trusted server operation. */
-export async function findStaffSession(
+/** Recheck a cookie-derived staff session id for a trusted server operation. */
+export async function findStaffSessionById(
   client: StaffRentalDatabaseClient,
-  staffCode: string,
+  sessionId: string,
 ): Promise<StaffSession | null> {
   const { data, error } = await client
     .from("sessions")
     .select("id,status")
-    .eq("staff_code", staffCode)
+    .eq("id", sessionId)
     .maybeSingle();
 
   if (error) {

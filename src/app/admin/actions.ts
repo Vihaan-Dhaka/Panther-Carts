@@ -1,6 +1,7 @@
 "use server";
 
 import { refresh } from "next/cache";
+import { redirect } from "next/navigation";
 import {
   executeAddAdminBins,
   executeConfigureAdminSession,
@@ -10,7 +11,10 @@ import {
   executeStartAdminSession,
 } from "@/lib/admin/dashboard";
 import type { AdminActionResult } from "@/lib/admin/types";
+import { AuthorizationError, requireAdmin } from "@/lib/auth/admin";
+import { consumeRateLimit } from "@/lib/auth/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 
 const UNEXPECTED: AdminActionResult = {
   status: "error",
@@ -18,13 +22,37 @@ const UNEXPECTED: AdminActionResult = {
   fieldErrors: {},
 };
 
+const UNAUTHORIZED: AdminActionResult = {
+  status: "error",
+  message: "Your admin session is not authorized. Sign in and try again.",
+  fieldErrors: {},
+};
+
+const RATE_LIMITED: AdminActionResult = {
+  status: "error",
+  message:
+    "Too many admin requests were submitted. Wait a moment and try again.",
+  fieldErrors: {},
+};
+
 async function runAdminAction(
-  operation: () => Promise<AdminActionResult>,
+  operation: (
+    client: ReturnType<typeof createAdminClient>,
+  ) => Promise<AdminActionResult>,
 ): Promise<AdminActionResult> {
   let result: AdminActionResult;
   try {
-    result = await operation();
-  } catch {
+    const admin = await requireAdmin();
+    const client = createAdminClient();
+    const limit = await consumeRateLimit(
+      client,
+      "admin_operation",
+      admin.userId,
+    );
+    if (!limit.allowed) return RATE_LIMITED;
+    result = await operation(client);
+  } catch (error) {
+    if (error instanceof AuthorizationError) return UNAUTHORIZED;
     return UNEXPECTED;
   }
   if (result.status === "success") refresh();
@@ -35,8 +63,8 @@ export async function createSessionAction(
   _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
-  return runAdminAction(() =>
-    executeCreateAdminSession(createAdminClient(), {
+  return runAdminAction((client) =>
+    executeCreateAdminSession(client, {
       name: formData.get("name"),
       rentalDurationMinutes: formData.get("rentalDurationMinutes"),
       pickupWindowMinutes: formData.get("pickupWindowMinutes"),
@@ -49,8 +77,8 @@ export async function configureSessionAction(
   _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
-  return runAdminAction(() =>
-    executeConfigureAdminSession(createAdminClient(), {
+  return runAdminAction((client) =>
+    executeConfigureAdminSession(client, {
       rentalDurationMinutes: formData.get("rentalDurationMinutes"),
       pickupWindowMinutes: formData.get("pickupWindowMinutes"),
     }),
@@ -63,7 +91,7 @@ export async function startSessionAction(
 ): Promise<AdminActionResult> {
   void _previousState;
   void _formData;
-  return runAdminAction(() => executeStartAdminSession(createAdminClient()));
+  return runAdminAction((client) => executeStartAdminSession(client));
 }
 
 export async function endSessionAction(
@@ -72,15 +100,15 @@ export async function endSessionAction(
 ): Promise<AdminActionResult> {
   void _previousState;
   void _formData;
-  return runAdminAction(() => executeEndAdminSession(createAdminClient()));
+  return runAdminAction((client) => executeEndAdminSession(client));
 }
 
 export async function addBinsAction(
   _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
-  return runAdminAction(() =>
-    executeAddAdminBins(createAdminClient(), {
+  return runAdminAction((client) =>
+    executeAddAdminBins(client, {
       mode: formData.get("mode"),
       binNumber: formData.get("binNumber"),
       rangeStart: formData.get("rangeStart"),
@@ -94,10 +122,16 @@ export async function notifyRentalAction(
   _previousState: AdminActionResult | null,
   formData: FormData,
 ): Promise<AdminActionResult> {
-  return runAdminAction(() =>
-    executeNotifyAdminRental(createAdminClient(), {
+  return runAdminAction((client) =>
+    executeNotifyAdminRental(client, {
       rentalId: formData.get("rentalId"),
       idempotencyKey: formData.get("idempotencyKey"),
     }),
   );
+}
+
+export async function logoutAdminAction(): Promise<never> {
+  const client = await createClient();
+  await client.auth.signOut();
+  redirect("/admin/login");
 }
