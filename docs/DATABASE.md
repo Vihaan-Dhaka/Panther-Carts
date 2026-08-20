@@ -424,7 +424,10 @@ completes before the second begins, and the race never occurs.
   non-blocking cleanup with `SKIP LOCKED`, and safe retry timing for admin
   login/operations, staff exchange and operations, and student
   validation/signup. Staff-session exchange similarly removes expired/revoked
-  browser sessions with bounded non-blocking cleanup.
+  browser sessions with bounded non-blocking cleanup. The authoritative current
+  identity upsert or session lock always occurs before cleanup; reversing that
+  order reintroduces cross-request deadlocks even when cleanup uses
+  `SKIP LOCKED`.
 
 Ticket 6 limits PII to authorized server operations, but it does not add
 application-level encryption-at-rest or automated retention deletion for

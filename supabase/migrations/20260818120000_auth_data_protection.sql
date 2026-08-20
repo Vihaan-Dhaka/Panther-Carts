@@ -116,21 +116,6 @@ begin
     raise exception 'PANTHER_CARTS:INVALID_RATE_LIMIT_INPUT';
   end if;
 
-  -- Opportunistic bounded cleanup keeps expired one-off identities from
-  -- growing without limit. Skip contended rows so cleanup cannot acquire
-  -- another caller's bucket before the current identity and invert lock order.
-  -- The current identity is reset atomically below.
-  delete from public.rate_limit_buckets
-  where ctid in (
-    select ctid
-    from public.rate_limit_buckets
-    where expires_at <= v_now
-      and not (scope = p_scope and identity_hash = p_identity_hash)
-    order by expires_at
-    limit 100
-    for update skip locked
-  );
-
   insert into public.rate_limit_buckets (
     scope,
     identity_hash,
@@ -159,6 +144,21 @@ begin
         else public.rate_limit_buckets.expires_at
       end
   returning * into v_bucket;
+
+  -- Lock the current identity first (in the upsert above), then opportunistically
+  -- remove other expired identities. This consistent ordering prevents two
+  -- callers from deleting each other's rows before each upserts its own row.
+  -- SKIP LOCKED keeps the non-authoritative cleanup from waiting on contention.
+  delete from public.rate_limit_buckets
+  where ctid in (
+    select ctid
+    from public.rate_limit_buckets
+    where expires_at <= v_now
+      and not (scope = p_scope and identity_hash = p_identity_hash)
+    order by expires_at
+    limit 100
+    for update skip locked
+  );
 
   return jsonb_build_object(
     'allowed', v_bucket.request_count <= p_limit,
@@ -209,18 +209,6 @@ begin
     raise exception 'PANTHER_CARTS:INVALID_STAFF_CREDENTIAL';
   end if;
 
-  -- Browser sessions are bounded operational data. Cleanup must never wait on
-  -- another request's row locks, for the same reason as rate-limit cleanup.
-  delete from public.staff_web_sessions
-  where id in (
-    select id
-    from public.staff_web_sessions
-    where expires_at <= now() or revoked_at is not null
-    order by coalesce(revoked_at, expires_at)
-    limit 100
-    for update skip locked
-  );
-
   select count(*)::integer into v_match_count
   from public.sessions
   where staff_link_hash = any(p_candidate_hashes)
@@ -249,6 +237,20 @@ begin
     p_session_token_hash,
     p_expires_at
   ) returning * into v_web_session;
+
+  -- Credential matching, the authoritative session lock, and the new token
+  -- insert all happen before cleanup. This matches admin_end_session's session
+  -- then web-session lock order and prevents invalid credentials from driving
+  -- cleanup work.
+  delete from public.staff_web_sessions
+  where id in (
+    select id
+    from public.staff_web_sessions
+    where expires_at <= now() or revoked_at is not null
+    order by coalesce(revoked_at, expires_at)
+    limit 100
+    for update skip locked
+  );
 
   return jsonb_build_object(
     'session_id', v_web_session.session_id,
