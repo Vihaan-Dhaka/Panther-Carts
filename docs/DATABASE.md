@@ -395,6 +395,10 @@ completes before the second begins, and the race never occurs.
   restrictive browser-deny policies. Anon/authenticated also receive no table,
   view, sequence, or RPC privileges; only service-role trusted server
   operations bypass RLS.
+- `service_role` must retain PostgreSQL's `BYPASSRLS` attribute. This is a
+  hosted Supabase guarantee and a requirement for sanctioned standalone local
+  databases; without it, forced restrictive policies fail closed as empty
+  results even when table privileges are present.
 - **Data API privileges are explicit** → `service_role` receives the table and
   sequence privileges needed by trusted `supabase-js` operations; `anon` and
   `authenticated` receive none. This supports Supabase's 2026 opt-in exposure
@@ -412,13 +416,15 @@ completes before the second begins, and the race never occurs.
 - Admins authenticate with Supabase Auth and require
   `app_metadata.role = 'admin'` at every page/read/mutation boundary.
 - Staff link/access credentials exchange for 12-hour database sessions in
-  HttpOnly strict cookies. Every staff read and mutation derives the session id
+  HttpOnly `SameSite=Lax` cookies. Every staff read and mutation derives the session id
   from the verifier-backed cookie; callers cannot choose another session.
 - New staff credentials use keyed HMAC verifiers plus authenticated ciphertext
   for required admin redisplay. Legacy plaintext staff links are scrubbed.
 - `consume_rate_limit` provides atomic fixed windows, hashed identities, bounded
-  cleanup, and safe retry timing for admin login/operations, staff exchange and
-  operations, and student validation/signup.
+  non-blocking cleanup with `SKIP LOCKED`, and safe retry timing for admin
+  login/operations, staff exchange and operations, and student
+  validation/signup. Staff-session exchange similarly removes expired/revoked
+  browser sessions with bounded non-blocking cleanup.
 
 Ticket 6 limits PII to authorized server operations, but it does not add
 application-level encryption-at-rest or automated retention deletion for

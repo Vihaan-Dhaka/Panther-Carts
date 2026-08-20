@@ -39,6 +39,30 @@ describe("hosted Supabase Data API grants", () => {
     expect(result.rows.every((row) => row.has_access)).toBe(true);
   });
 
+  it("proves service_role BYPASSRLS returns protected rows instead of an empty result", async () => {
+    const identity = "7".repeat(64);
+    await db.query(
+      `insert into public.rate_limit_buckets (
+         scope, identity_hash, request_count, window_started_at, expires_at
+       ) values ('service_role_probe', $1, 1, now(), now() + interval '1 minute')`,
+      [identity],
+    );
+
+    let rows: Array<{ identity_hash: string }> = [];
+    try {
+      await db.exec("set role service_role");
+      const result = await db.query<{ identity_hash: string }>(
+        `select identity_hash from public.rate_limit_buckets
+         where scope = 'service_role_probe'`,
+      );
+      rows = result.rows;
+    } finally {
+      await db.exec("reset role");
+    }
+
+    expect(rows).toEqual([{ identity_hash: identity }]);
+  });
+
   it("denies browser roles EXECUTE on every public function", async () => {
     const result = await db.query<{
       function_name: string;

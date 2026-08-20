@@ -121,7 +121,7 @@ export async function requireStaffSession(
 export const staffSessionCookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite: "strict" as const,
+  sameSite: "lax" as const,
   path: "/staff",
   maxAge: STAFF_SESSION_SECONDS,
   priority: "high" as const,

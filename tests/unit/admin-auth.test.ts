@@ -40,6 +40,14 @@ describe("admin authorization", () => {
       },
       null,
     ],
+    [
+      {
+        id: "9ce0f6b4-63b0-48b0-bb5b-0fe117e640a9",
+        app_metadata: {},
+        user_metadata: { role: "admin" },
+      },
+      null,
+    ],
     [null, { message: "private auth error" }],
   ])(
     "denies missing, non-admin, and failed identities",

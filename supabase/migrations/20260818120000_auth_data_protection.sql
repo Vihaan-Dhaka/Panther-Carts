@@ -117,7 +117,9 @@ begin
   end if;
 
   -- Opportunistic bounded cleanup keeps expired one-off identities from
-  -- growing without limit. The current identity is reset atomically below.
+  -- growing without limit. Skip contended rows so cleanup cannot acquire
+  -- another caller's bucket before the current identity and invert lock order.
+  -- The current identity is reset atomically below.
   delete from public.rate_limit_buckets
   where ctid in (
     select ctid
@@ -126,6 +128,7 @@ begin
       and not (scope = p_scope and identity_hash = p_identity_hash)
     order by expires_at
     limit 100
+    for update skip locked
   );
 
   insert into public.rate_limit_buckets (
@@ -205,6 +208,18 @@ begin
      or p_expires_at > now() + interval '12 hours 5 minutes' then
     raise exception 'PANTHER_CARTS:INVALID_STAFF_CREDENTIAL';
   end if;
+
+  -- Browser sessions are bounded operational data. Cleanup must never wait on
+  -- another request's row locks, for the same reason as rate-limit cleanup.
+  delete from public.staff_web_sessions
+  where id in (
+    select id
+    from public.staff_web_sessions
+    where expires_at <= now() or revoked_at is not null
+    order by coalesce(revoked_at, expires_at)
+    limit 100
+    for update skip locked
+  );
 
   select count(*)::integer into v_match_count
   from public.sessions
@@ -597,6 +612,7 @@ revoke execute on function public.create_staff_web_session(
 revoke execute on function public.admin_create_session(
   text, integer, integer, text, text, text, text, text, text
 ) from public;
+revoke execute on function public.admin_end_session(uuid) from public;
 
 do $$
 declare
@@ -606,7 +622,8 @@ begin
   foreach v_function in array array[
     'consume_rate_limit(text,text,integer,integer)',
     'create_staff_web_session(text[],text,timestamptz)',
-    'admin_create_session(text,integer,integer,text,text,text,text,text,text)'
+    'admin_create_session(text,integer,integer,text,text,text,text,text,text)',
+    'admin_end_session(uuid)'
   ] loop
     foreach v_role in array array['anon', 'authenticated'] loop
       if exists (select 1 from pg_roles where rolname = v_role) then

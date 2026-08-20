@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exchangeStaffCredential, resolveStaffSession } from "@/lib/auth/staff";
+import {
+  exchangeStaffCredential,
+  resolveStaffSession,
+  STAFF_SESSION_SECONDS,
+  staffSessionCookieOptions,
+} from "@/lib/auth/staff";
 
 const SESSION_ID = "9ce0f6b4-63b0-48b0-bb5b-0fe117e640a9";
 const OTHER_SESSION_ID = "15f7d61c-a959-447c-bb3f-da59561b90a2";
@@ -48,6 +53,18 @@ function resolveClient(options?: { webSession?: unknown; session?: unknown }) {
 }
 
 describe("staff credential exchange and browser sessions", () => {
+  it("uses a hardened cookie that survives a cross-site top-level link navigation", () => {
+    expect(staffSessionCookieOptions).toEqual({
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/staff",
+      maxAge: STAFF_SESSION_SECONDS,
+      priority: "high",
+    });
+    expect(STAFF_SESSION_SECONDS).toBe(12 * 60 * 60);
+  });
+
   it("exchanges a valid link using only verifiers and returns a fresh browser token", async () => {
     const rpc = vi.fn().mockImplementation(async (_name, args) => ({
       data: {

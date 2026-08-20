@@ -6,7 +6,9 @@ Ticket 6 authentication is enforced at server-operation boundaries:
   `app_metadata.role` is `admin`. Pages and every Server Action revalidate the
   user through Supabase; the service-role client is created only afterward.
 - Staff link tokens and eight-digit access codes are exchanged once at the
-  server for a random, 12-hour, HttpOnly `SameSite=Strict` browser session.
+  server for a random, 12-hour, HttpOnly `SameSite=Lax` browser session. Lax
+  permits the initial top-level link navigation from webmail/chat while Next.js
+  Server Action origin checks protect mutations.
   The database stores keyed verifiers for credentials and browser tokens, not
   their plaintext. Ending a rental session revokes its staff browser sessions.
 - Staff links/codes are protected with HMAC verifiers. Authenticated ciphertext

@@ -111,6 +111,31 @@ describe("Ticket 6 authentication data migration", () => {
     ).rejects.toThrow(/SESSION_NOT_ACTIVE/);
   });
 
+  it("bounded-cleanups expired and revoked staff browser sessions during exchange", async () => {
+    const sessionId = await insertProtectedSession("ACTIVE");
+    await db.query(
+      `insert into public.staff_web_sessions (
+         session_id, token_hash, created_at, expires_at, revoked_at
+       ) values
+         ($1, $2, now() - interval '2 hours', now() - interval '1 hour', null),
+         ($1, $3, now() - interval '1 hour', now() + interval '1 hour', now())`,
+      [sessionId, "d".repeat(64), "e".repeat(64)],
+    );
+
+    await db.query(
+      `select public.create_staff_web_session(
+         $1, $2, now() + interval '1 hour'
+       )`,
+      [[HASH_A], "f".repeat(64)],
+    );
+    const stale = await db.query<{ count: number }>(
+      `select count(*)::int as count
+       from public.staff_web_sessions
+       where expires_at <= now() or revoked_at is not null`,
+    );
+    expect(stale.rows[0].count).toBe(0);
+  });
+
   it("enforces exact fixed-window rate-limit boundaries and resets after expiry", async () => {
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       const result = await db.query<{
@@ -190,14 +215,14 @@ describe("Ticket 6 authentication data migration", () => {
        left join pg_policy p on p.polrelid = c.oid
        where n.nspname = 'public'
          and c.relname in (
-           'sessions', 'students', 'queue_entries', 'reservations', 'rentals',
+           'sessions', 'students', 'bins', 'queue_entries', 'reservations', 'rentals',
            'notification_outbox', 'audit_events', 'inbound_sms_events',
            'staff_web_sessions', 'rate_limit_buckets'
          )
        group by c.relname, c.relrowsecurity, c.relforcerowsecurity
        order by c.relname`,
     );
-    expect(rows.rows).toHaveLength(10);
+    expect(rows.rows).toHaveLength(11);
     expect(
       rows.rows.every(
         (row) => row.rls_enabled && row.rls_forced && row.policy_count >= 1,
@@ -210,7 +235,7 @@ describe("Ticket 6 authentication data migration", () => {
        where pubname = 'supabase_realtime'
          and schemaname = 'public'
          and tablename in (
-           'sessions', 'students', 'queue_entries', 'reservations', 'rentals',
+           'sessions', 'students', 'bins', 'queue_entries', 'reservations', 'rentals',
            'notification_outbox', 'audit_events', 'inbound_sms_events',
            'staff_web_sessions', 'rate_limit_buckets'
          )`,
