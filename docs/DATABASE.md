@@ -16,6 +16,9 @@ Migrations:
   and manual-notification RPC functions.
 - `20260812120000_two_way_sms.sql` — Ticket 5 consent evidence, corrected
   notifications, inbound idempotency/dispatch, cancellation, and outbox leases.
+- `20260818120000_auth_data_protection.sql` — Ticket 6 protected staff
+  credentials, database-backed staff sessions, atomic rate limits, forced RLS,
+  explicit browser-deny policies, and hardened Data API/RPC grants.
 
 ## Tables
 
@@ -48,12 +51,20 @@ Migrations:
   phone numbers are not retained here.
 - **`audit_events`** — append-only audit log with JSON metadata.
 
-### Personal data (deferred to Ticket 6)
+### Personal data protection (Ticket 6)
 
-Student PII is stored in plain columns. SMS consent evidence is limited to its
-timestamp and disclosure version. **Column-level encryption, retention
-windows, and the RLS policies that limit who may read this data are Ticket 6.**
-No real student data is seeded in this ticket.
+Student PII remains in the schema columns required by the authoritative queue
+and SMS engine. Ticket 6 forces RLS on every application table, installs
+explicit restrictive browser-deny policies, revokes anon/authenticated table,
+view, sequence, and RPC access, and exposes PII only after admin/staff
+authorization through trusted service-role server operations. SMS consent
+evidence remains limited to its timestamp and disclosure version.
+
+At-rest application-level PII encryption and automatic retention deletion are
+not implemented because the product does not define a key-management system or
+retention period. Those require a separate policy decision and migration; they
+must not be approximated by committing a database key or silently deleting
+rental/audit history.
 
 ## Enums / state machines
 
@@ -378,11 +389,16 @@ connections, or behind an explicitly uncommitted conflicting transaction.
 Dispatching two promises alone is not sufficient — the first typically
 completes before the second begins, and the race never occurs.
 
-## Security foundation (and what remains for Ticket 6)
+## Ticket 6 authentication and data protection
 
-- **RLS is enabled on every application table with no policies** → anon /
-  authenticated are denied by default; only the service-role key (trusted
-  server operations) bypasses RLS.
+- **RLS is enabled and forced on every application table** with explicit
+  restrictive browser-deny policies. Anon/authenticated also receive no table,
+  view, sequence, or RPC privileges; only service-role trusted server
+  operations bypass RLS.
+- `service_role` must retain PostgreSQL's `BYPASSRLS` attribute. This is a
+  hosted Supabase guarantee and a requirement for sanctioned standalone local
+  databases; without it, forced restrictive policies fail closed as empty
+  results even when table privileges are present.
 - **Data API privileges are explicit** → `service_role` receives the table and
   sequence privileges needed by trusted `supabase-js` operations; `anon` and
   `authenticated` receive none. This supports Supabase's 2026 opt-in exposure
@@ -392,10 +408,29 @@ completes before the second begins, and the race never occurs.
   schema-qualifies all references.
 - The default `PUBLIC` execute grant on functions is **revoked**; only
   `service_role` may call the RPCs.
+- Protected tables are removed from the `supabase_realtime` publication; the
+  application does not use Postgres Changes for these records.
 - The service-role key is never exposed to the browser (`server-only` modules,
   no `NEXT_PUBLIC_` prefix — enforced in `src/lib/supabase/`).
 
-**Deferred to Ticket 6:** scoped RLS policies for staff/admin surfaces
-(student PII visible only to authorized roles), admin authentication, staff
-link/access-code verification, session-code validation, rate limiting, and
-column-level encryption / retention for student personal data.
+- Admins authenticate with Supabase Auth and require
+  `app_metadata.role = 'admin'` at every page/read/mutation boundary.
+- Staff link/access credentials exchange for 12-hour database sessions in
+  HttpOnly `SameSite=Lax` cookies. Every staff read and mutation derives the session id
+  from the verifier-backed cookie; callers cannot choose another session.
+- New staff credentials use keyed HMAC verifiers plus authenticated ciphertext
+  for required admin redisplay. Legacy plaintext staff links are scrubbed.
+- `consume_rate_limit` provides atomic fixed windows, hashed identities, bounded
+  non-blocking cleanup with `SKIP LOCKED`, and safe retry timing for admin
+  login/operations, staff exchange and operations, and student
+  validation/signup. Staff-session exchange similarly removes expired/revoked
+  browser sessions with bounded non-blocking cleanup. The authoritative current
+  identity upsert or session lock always occurs before cleanup; reversing that
+  order reintroduces cross-request deadlocks even when cleanup uses
+  `SKIP LOCKED`.
+
+Ticket 6 limits PII to authorized server operations, but it does not add
+application-level encryption-at-rest or automated retention deletion for
+student records. Those controls require an approved key-management and
+retention policy; Supabase/PostgreSQL platform encryption and operational
+backups remain the deployment baseline until that policy exists.

@@ -101,8 +101,8 @@ describe("student signup server operation", () => {
 
   it.each([
     [null, "invalid"],
-    [{ id: SESSION_ID, status: "DRAFT" as const }, "not active"],
-    [{ id: SESSION_ID, status: "CLOSED" as const }, "not active"],
+    [{ id: SESSION_ID, status: "DRAFT" as const }, "invalid or inactive"],
+    [{ id: SESSION_ID, status: "CLOSED" as const }, "invalid or inactive"],
   ])(
     "rejects unknown or inactive sessions safely",
     async (session, message) => {
@@ -139,7 +139,7 @@ describe("student signup server operation", () => {
     ["INVALID_EMAIL", "student email"],
     ["INVALID_PHONE", "valid phone"],
     ["SESSION_NOT_FOUND", "invalid"],
-    ["SESSION_NOT_ACTIVE", "not active"],
+    ["SESSION_NOT_ACTIVE", "invalid or inactive"],
   ])(
     "maps PANTHER_CARTS:%s without exposing database text",
     async (code, message) => {

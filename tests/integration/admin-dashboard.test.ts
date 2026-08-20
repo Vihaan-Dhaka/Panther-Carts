@@ -13,6 +13,21 @@ import {
   joinQueue,
 } from "./helpers/db";
 
+function createArgs(name: string, key: string) {
+  const hash = () => randomUUID().replaceAll("-", "").repeat(2);
+  return [
+    name,
+    60,
+    10,
+    key,
+    `signup-${randomUUID().replaceAll("-", "")}`,
+    `v1.${randomUUID()}.link`,
+    hash(),
+    `v1.${randomUUID()}.code`,
+    hash(),
+  ];
+}
+
 afterAll(async () => {
   await closePool();
 });
@@ -22,28 +37,24 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
     const pool = getPool();
     const key = randomUUID();
     const created = await pool.query(
-      `select public.admin_create_session($1, $2, $3, $4) as result`,
-      ["Real PostgreSQL admin", 60, 10, key],
+      `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9) as result`,
+      createArgs("Real PostgreSQL admin", key),
     );
     const sessionId = created.rows[0].result.session.id as string;
     expect(created.rows[0].result.session.student_code).toMatch(
       /^signup-[a-f0-9]{32}$/,
     );
-    expect(created.rows[0].result.session.staff_code).toMatch(
-      /^staff-[a-f0-9]{32}$/,
-    );
+    expect(created.rows[0].result.session.staff_code).toMatch(/^v1\./);
     const createReplay = await pool.query(
-      `select public.admin_create_session($1, $2, $3, $4) as result`,
-      ["Real PostgreSQL admin", 60, 10, key],
+      `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9) as result`,
+      createArgs("Real PostgreSQL admin", key),
     );
     expect(createReplay.rows[0].result.idempotent_replay).toBe(true);
     await expect(
-      pool.query(`select public.admin_create_session($1, $2, $3, $4)`, [
-        "Second browser tab",
-        60,
-        10,
-        randomUUID(),
-      ]),
+      pool.query(
+        `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        createArgs("Second browser tab", randomUUID()),
+      ),
     ).rejects.toThrow(/SESSION_ALREADY_OPEN/);
 
     const bins = await pool.query(
@@ -82,8 +93,8 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
     try {
       await firstClient.query("begin");
       const first = await firstClient.query(
-        `select public.admin_create_session($1, $2, $3, $4) as result`,
-        ["First tab", 60, 10, randomUUID()],
+        `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9) as result`,
+        createArgs("First tab", randomUUID()),
       );
       sessionId = first.rows[0].result.session.id as string;
 
@@ -92,8 +103,8 @@ describeDb("Ticket 4 admin dashboard on real PostgreSQL", () => {
       // domain error. Without the singleton lock it instead waits on the unique
       // index and then surfaces a raw duplicate-key violation deterministically.
       const competing = pool.query(
-        `select public.admin_create_session($1, $2, $3, $4) as result`,
-        ["Second tab", 60, 10, randomUUID()],
+        `select public.admin_create_session($1, $2, $3, $4, $5, $6, $7, $8, $9) as result`,
+        createArgs("Second tab", randomUUID()),
       );
       const wasPending = await isStillPending(competing);
       await firstClient.query("commit");

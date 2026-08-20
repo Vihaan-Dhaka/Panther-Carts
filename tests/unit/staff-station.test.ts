@@ -112,18 +112,15 @@ const publicStudentTable = {
 };
 
 describe("staff station server operations", () => {
-  it("resolves access only through the staff code column", async () => {
+  it("rechecks access through the cookie-derived session id", async () => {
     const { client, builders } = fakeClient();
 
     await expect(
-      getStaffStationAvailability(client, "staff-secret"),
+      getStaffStationAvailability(client, SESSION_ID),
     ).resolves.toEqual({ available: true });
     expect(builders.sessions[0].select).toHaveBeenCalledWith("id,status");
     expect(builders.sessions[0].eq).toHaveBeenCalledOnce();
-    expect(builders.sessions[0].eq).toHaveBeenCalledWith(
-      "staff_code",
-      "staff-secret",
-    );
+    expect(builders.sessions[0].eq).toHaveBeenCalledWith("id", SESSION_ID);
   });
 
   it.each([
@@ -134,18 +131,17 @@ describe("staff station server operations", () => {
     "handles unknown and inactive staff sessions safely",
     async (session, message) => {
       const { client } = fakeClient({ session });
-      const result = await getStaffStationAvailability(client, "staff-secret");
+      const result = await getStaffStationAvailability(client, SESSION_ID);
 
       expect(result.available).toBe(false);
       expect(JSON.stringify(result)).toContain(message);
       expect(JSON.stringify(result)).not.toContain(SESSION_ID);
-      expect(JSON.stringify(result)).not.toContain("staff-secret");
     },
   );
 
   it("rejects malformed pickup codes before any database lookup", async () => {
     const { client, from } = fakeClient();
-    const state = await executeCheckoutLookup(client, "staff-secret", {
+    const state = await executeCheckoutLookup(client, SESSION_ID, {
       pickupCode: "12a",
     });
 
@@ -183,7 +179,7 @@ describe("staff station server operations", () => {
       },
     });
 
-    const state = await executeCheckoutLookup(client, "staff-secret", {
+    const state = await executeCheckoutLookup(client, SESSION_ID, {
       pickupCode: "0427",
     });
 
@@ -198,7 +194,7 @@ describe("staff station server operations", () => {
 
   it("requires PantherCard collection and preserves selected values", async () => {
     const { client, rpc } = fakeClient();
-    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const state = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "2",
       pantherCardCollected: null,
     });
@@ -227,7 +223,7 @@ describe("staff station server operations", () => {
         error: { message: `PANTHER_CARTS:${code} secret SQL and row id` },
       },
     });
-    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const state = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "1",
       pantherCardCollected: "on",
     });
@@ -244,11 +240,11 @@ describe("staff station server operations", () => {
       rpc: checkoutRpcData(true),
     });
 
-    const first = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const first = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "1",
       pantherCardCollected: "on",
     });
-    const retry = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const retry = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "1",
       pantherCardCollected: "on",
     });
@@ -282,7 +278,7 @@ describe("staff station server operations", () => {
       },
       rpc: checkoutRpcData(),
     });
-    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const state = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "1",
       pantherCardCollected: "on",
     });
@@ -340,7 +336,7 @@ describe("staff station server operations", () => {
       },
     });
 
-    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const state = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "2",
       pantherCardCollected: "on",
     });
@@ -363,7 +359,7 @@ describe("staff station server operations", () => {
       },
     });
 
-    const state = await executeCheckout(client, "staff-secret", "0427", KEY, {
+    const state = await executeCheckout(client, SESSION_ID, "0427", KEY, {
       binNumber: "2",
       pantherCardCollected: "on",
     });
@@ -393,7 +389,7 @@ describe("staff station server operations", () => {
         students: publicStudentTable.students,
       },
     });
-    const state = await executeReturnLookup(client, "staff-secret", {
+    const state = await executeReturnLookup(client, SESSION_ID, {
       binNumber: " 014 ",
     });
 
@@ -412,7 +408,7 @@ describe("staff station server operations", () => {
 
   it("requires PantherCard return and preserves the physical bin number", async () => {
     const { client, rpc } = fakeClient();
-    const state = await executeReturn(client, "staff-secret", KEY, {
+    const state = await executeReturn(client, SESSION_ID, KEY, {
       binNumber: "014",
       pantherCardReturned: null,
     });
@@ -438,7 +434,7 @@ describe("staff station server operations", () => {
         error: { message: `PANTHER_CARTS:${code} private database response` },
       },
     });
-    const state = await executeReturn(client, "staff-secret", KEY, {
+    const state = await executeReturn(client, SESSION_ID, KEY, {
       binNumber: "1",
       pantherCardReturned: "on",
     });
@@ -454,7 +450,7 @@ describe("staff station server operations", () => {
       rpc: returnRpcData(true),
     });
 
-    const result = await executeReturn(client, "staff-secret", KEY, {
+    const result = await executeReturn(client, SESSION_ID, KEY, {
       binNumber: "1",
       pantherCardReturned: "on",
     });
@@ -481,7 +477,7 @@ describe("staff station server operations", () => {
       rpc: returnRpcData(),
     });
 
-    const state = await executeReturn(client, "staff-secret", KEY, {
+    const state = await executeReturn(client, SESSION_ID, KEY, {
       binNumber: "1",
       pantherCardReturned: "on",
     });
@@ -500,7 +496,7 @@ describe("staff station server operations", () => {
         error: { message: "duplicate key rentals private raw response" },
       },
     });
-    const state = await executeReturn(client, "staff-secret", KEY, {
+    const state = await executeReturn(client, SESSION_ID, KEY, {
       binNumber: "1",
       pantherCardReturned: "on",
     });

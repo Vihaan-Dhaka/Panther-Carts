@@ -34,7 +34,7 @@ export async function createMigratedDb(
   const db = new PGlite();
   if (options.createServiceRole) {
     await db.exec(`
-      create role service_role nologin;
+      create role service_role nologin bypassrls;
       create role anon nologin;
       create role authenticated nologin;
       alter default privileges in schema public
@@ -66,19 +66,44 @@ export async function createSession(
     pickupWindowMinutes = 10,
     status = "ACTIVE",
   } = options;
-  const res = await db.query<{ id: string }>(
-    `insert into public.sessions
-       (name, status, student_code, staff_code, rental_duration_minutes, pickup_window_minutes, started_at)
-     values ('Test', $1, $2, $3, $4, $5, now())
-     returning id`,
-    [
-      status,
-      `stu_${randomUUID().slice(0, 8)}`,
-      `stf_${randomUUID().slice(0, 8)}`,
-      rentalDurationMinutes,
-      pickupWindowMinutes,
-    ],
+  const protectedSchema = await db.query<{ present: boolean }>(
+    `select exists (
+       select 1 from information_schema.columns
+       where table_schema = 'public'
+         and table_name = 'sessions'
+         and column_name = 'staff_link_hash'
+     ) as present`,
   );
+  const res = protectedSchema.rows[0].present
+    ? await db.query<{ id: string }>(
+        `insert into public.sessions
+       (name, status, student_code, staff_code, staff_link_hash,
+        rental_duration_minutes, pickup_window_minutes, started_at)
+     values ('Test', $1, $2, $3, $4, $5, $6, now())
+     returning id`,
+        [
+          status,
+          `stu_${randomUUID().slice(0, 8)}`,
+          `stf_${randomUUID().slice(0, 8)}`,
+          randomUUID().replaceAll("-", "").repeat(2),
+          rentalDurationMinutes,
+          pickupWindowMinutes,
+        ],
+      )
+    : await db.query<{ id: string }>(
+        `insert into public.sessions
+           (name, status, student_code, staff_code,
+            rental_duration_minutes, pickup_window_minutes, started_at)
+         values ('Test', $1, $2, $3, $4, $5, now())
+         returning id`,
+        [
+          status,
+          `stu_${randomUUID().slice(0, 8)}`,
+          `stf_${randomUUID().slice(0, 8)}`,
+          rentalDurationMinutes,
+          pickupWindowMinutes,
+        ],
+      );
   return res.rows[0].id;
 }
 

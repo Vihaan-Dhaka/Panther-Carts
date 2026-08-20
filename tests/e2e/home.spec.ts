@@ -11,36 +11,29 @@ test("homepage links to the three interfaces", async ({ page }) => {
   await expect(page.getByRole("link", { name: /Admin/ })).toBeVisible();
 });
 
-test("student signup rejects an invalid session link safely", async ({
+test("staff access validates a malformed manual code before exchange", async ({
   page,
 }) => {
-  await page.goto("/student/demo-session");
+  await page.goto("/staff");
   await expect(
-    page.getByRole("heading", { name: "Student signup" }),
+    page.getByRole("heading", { name: "Staff access" }),
   ).toBeVisible();
+  await page.getByLabel("Staff access code").fill("12");
+  await page.getByRole("button", { name: "Open staff station" }).click();
   await expect(
-    page.getByRole("heading", { name: "Signup unavailable" }),
+    page.getByText("Enter the eight-digit staff access code"),
   ).toBeVisible();
-  await expect(page.getByText(/This signup link is invalid\./)).toBeVisible();
-  await expect(page.getByText("demo-session")).toHaveCount(0);
 });
 
-test("staff station rejects an invalid access link safely", async ({
-  page,
-}) => {
-  await page.goto("/staff/demo-staff");
-  await expect(
-    page.getByRole("heading", { name: "Staff station unavailable" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(/This staff station link is invalid\./),
-  ).toBeVisible();
-  await expect(page.getByText("demo-staff")).toHaveCount(0);
-});
-
-test("admin dashboard renders", async ({ page }) => {
+test("admin dashboard requires authentication", async ({ page }) => {
   await page.goto("/admin");
   await expect(
-    page.getByRole("heading", { name: "Admin Dashboard" }),
+    page.getByRole("heading", { name: "Admin sign in" }),
   ).toBeVisible();
+  await expect(page.getByLabel("Admin email")).toBeVisible();
+  await expect(page.getByLabel("Password")).toHaveAttribute("type", "password");
+  await expect(page).toHaveURL(/\/admin\/login$/);
+  const headers = await page.request.get("/admin/login");
+  expect(headers.headers()["cache-control"]).toMatch(/no-store|no-cache/);
+  expect(headers.headers()["referrer-policy"]).toBe("no-referrer");
 });

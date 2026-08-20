@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { QueueErrorCode, QueueOperationError } from "./errors";
 import {
   checkoutRental,
-  findStaffSession,
+  findStaffSessionById,
   getCheckoutPreview,
   getPublicStudentForSession,
   getReturnPreview,
@@ -22,8 +22,8 @@ import {
   pickupCodeSchema,
   returnConfirmationSchema,
   returnLookupSchema,
-  staffAccessCodeSchema,
 } from "@/lib/validation/staff";
+import { z } from "zod";
 
 type FieldErrors<T extends string> = Partial<Record<T, string[]>>;
 
@@ -129,14 +129,14 @@ function newIdempotencyKey(): string {
 
 async function requireActiveStaffSession(
   client: StaffRentalDatabaseClient,
-  staffCodeInput: unknown,
+  sessionIdInput: unknown,
 ): Promise<StaffSession> {
-  const code = staffAccessCodeSchema.safeParse(staffCodeInput);
-  if (!code.success) {
+  const sessionId = z.uuid().safeParse(sessionIdInput);
+  if (!sessionId.success) {
     throw new QueueOperationError(QueueErrorCode.SESSION_NOT_FOUND);
   }
 
-  const session = await findStaffSession(client, code.data);
+  const session = await findStaffSessionById(client, sessionId.data);
   if (!session) {
     throw new QueueOperationError(QueueErrorCode.SESSION_NOT_FOUND);
   }
@@ -349,10 +349,10 @@ function returnConfirmationError(
 
 export async function getStaffStationAvailability(
   client: StaffRentalDatabaseClient,
-  staffCodeInput: unknown,
+  sessionIdInput: unknown,
 ): Promise<StaffStationAvailability> {
   try {
-    await requireActiveStaffSession(client, staffCodeInput);
+    await requireActiveStaffSession(client, sessionIdInput);
     return { available: true };
   } catch (error) {
     if (error instanceof QueueOperationError) {
@@ -369,7 +369,7 @@ export async function getStaffStationAvailability(
 
 export async function executeCheckoutLookup(
   client: StaffRentalDatabaseClient,
-  staffCodeInput: unknown,
+  sessionIdInput: unknown,
   input: { pickupCode?: unknown },
 ): Promise<CheckoutLookupState> {
   const values = { pickupCode: stringValue(input.pickupCode) };
@@ -384,7 +384,7 @@ export async function executeCheckoutLookup(
   }
 
   try {
-    const session = await requireActiveStaffSession(client, staffCodeInput);
+    const session = await requireActiveStaffSession(client, sessionIdInput);
     return {
       status: "preview",
       values: { pickupCode: parsed.data.pickupCode },
@@ -407,7 +407,7 @@ export async function executeCheckoutLookup(
 
 export async function executeCheckout(
   client: StaffRentalDatabaseClient,
-  staffCodeInput: unknown,
+  sessionIdInput: unknown,
   pickupCodeInput: unknown,
   idempotencyKeyInput: unknown,
   input: { binNumber?: unknown; pantherCardCollected?: unknown },
@@ -443,7 +443,7 @@ export async function executeCheckout(
 
   let session: StaffSession | null = null;
   try {
-    session = await requireActiveStaffSession(client, staffCodeInput);
+    session = await requireActiveStaffSession(client, sessionIdInput);
     const result = await checkoutRental(
       client,
       session.id,
@@ -504,7 +504,7 @@ export async function executeCheckout(
 
 export async function executeReturnLookup(
   client: StaffRentalDatabaseClient,
-  staffCodeInput: unknown,
+  sessionIdInput: unknown,
   input: { binNumber?: unknown },
 ): Promise<ReturnLookupState> {
   const values = { binNumber: stringValue(input.binNumber) };
@@ -519,7 +519,7 @@ export async function executeReturnLookup(
   }
 
   try {
-    const session = await requireActiveStaffSession(client, staffCodeInput);
+    const session = await requireActiveStaffSession(client, sessionIdInput);
     return {
       status: "preview",
       values: { binNumber: parsed.data.binNumber },
@@ -542,7 +542,7 @@ export async function executeReturnLookup(
 
 export async function executeReturn(
   client: StaffRentalDatabaseClient,
-  staffCodeInput: unknown,
+  sessionIdInput: unknown,
   idempotencyKeyInput: unknown,
   input: { binNumber?: unknown; pantherCardReturned?: unknown },
 ): Promise<ReturnConfirmationState> {
@@ -568,7 +568,7 @@ export async function executeReturn(
   }
 
   try {
-    const session = await requireActiveStaffSession(client, staffCodeInput);
+    const session = await requireActiveStaffSession(client, sessionIdInput);
     const result = await returnRental(client, session.id, confirmation.data);
     let student: StaffStudent | null = null;
     try {

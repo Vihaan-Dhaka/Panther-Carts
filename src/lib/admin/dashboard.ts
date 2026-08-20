@@ -3,6 +3,14 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
+  credentialVerifier,
+  decryptCredential,
+  encryptCredential,
+  generateStaffAccessCode,
+  generateStaffLinkToken,
+  generateStudentSessionCode,
+} from "@/lib/auth/credentials";
+import {
   type AdminActionResult,
   type AdminDashboardSnapshot,
   type AdminInventoryRow,
@@ -35,7 +43,7 @@ import {
 export type AdminDatabaseClient = Pick<SupabaseClient, "from" | "rpc">;
 
 const SESSION_SELECT =
-  "id,name,status,student_code,staff_code,rental_duration_minutes,pickup_window_minutes,created_at,started_at,ended_at";
+  "id,name,status,student_code,staff_code,staff_access_code_ciphertext,staff_credential_version,rental_duration_minutes,pickup_window_minutes,created_at,started_at,ended_at";
 const CURRENT_OUT_SELECT =
   "rental_id,session_id,bin_number,full_name,panther_id,email,phone,checked_out_at,due_at,is_currently_late";
 const CURRENT_LATE_SELECT =
@@ -203,14 +211,25 @@ function safeBaseUrl(): string {
 function sessionDto(row: AdminSessionRow): AdminSessionDto {
   const baseUrl = safeBaseUrl();
   const studentPath = `/student/${encodeURIComponent(row.student_code)}`;
-  const staffPath = `/staff/${encodeURIComponent(row.staff_code)}`;
+  let staffLinkToken: string | null = null;
+  let staffAccessCode: string | null = null;
+  if (
+    row.staff_credential_version === "hmac-v1" &&
+    row.staff_access_code_ciphertext
+  ) {
+    staffLinkToken = decryptCredential(row.staff_code);
+    staffAccessCode = decryptCredential(row.staff_access_code_ciphertext);
+  }
+  const staffPath = staffLinkToken
+    ? `/staff/${encodeURIComponent(staffLinkToken)}`
+    : null;
   return {
     name: row.name,
     status: row.status,
     studentCode: row.student_code,
-    staffCode: row.staff_code,
+    staffAccessCode,
     studentLink: `${baseUrl}${studentPath}`,
-    staffLink: `${baseUrl}${staffPath}`,
+    staffLink: staffPath ? `${baseUrl}${staffPath}` : null,
     rentalDurationMinutes: row.rental_duration_minutes,
     pickupWindowMinutes: row.pickup_window_minutes,
     createdAt: row.created_at,
@@ -562,11 +581,19 @@ export async function executeCreateAdminSession(
   const parsed = adminSessionCreationSchema.safeParse(input);
   if (!parsed.success) return validationError(parsed.error);
   try {
+    const studentCode = generateStudentSessionCode();
+    const staffLinkToken = generateStaffLinkToken();
+    const staffAccessCode = generateStaffAccessCode();
     const result = await sessionRpc(client, "admin_create_session", {
       p_name: parsed.data.name,
       p_rental_duration_minutes: parsed.data.rentalDurationMinutes,
       p_pickup_window_minutes: parsed.data.pickupWindowMinutes,
       p_idempotency_key: parsed.data.idempotencyKey,
+      p_student_code: studentCode,
+      p_staff_link_ciphertext: encryptCredential(staffLinkToken),
+      p_staff_link_hash: credentialVerifier(staffLinkToken),
+      p_staff_access_code_ciphertext: encryptCredential(staffAccessCode),
+      p_staff_access_code_hash: credentialVerifier(staffAccessCode),
     });
     return {
       status: "success",

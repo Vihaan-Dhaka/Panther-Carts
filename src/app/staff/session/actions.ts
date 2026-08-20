@@ -10,23 +10,37 @@ import {
   type ReturnConfirmationState,
   type ReturnLookupState,
 } from "@/lib/queue/staff-station";
+import { requireStaffSession } from "@/lib/auth/staff";
+import { consumeRateLimit } from "@/lib/auth/rate-limit";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-function formString(
+function formValue(
   formData: FormData,
   name: string,
 ): FormDataEntryValue | null {
   return formData.get(name);
 }
 
+async function authorize() {
+  const client = createAdminClient();
+  const staff = await requireStaffSession(client);
+  const limit = await consumeRateLimit(
+    client,
+    "staff_operation",
+    staff.tokenHash,
+  );
+  if (!limit.allowed) throw new Error("Staff operation rate limited");
+  return { client, sessionId: staff.sessionId };
+}
+
 export async function lookupCheckout(
-  staffCode: string,
   _previousState: CheckoutLookupState,
   formData: FormData,
 ): Promise<CheckoutLookupState> {
-  const input = { pickupCode: formString(formData, "pickupCode") };
+  const input = { pickupCode: formValue(formData, "pickupCode") };
   try {
-    return await executeCheckoutLookup(createAdminClient(), staffCode, input);
+    const auth = await authorize();
+    return await executeCheckoutLookup(auth.client, auth.sessionId, input);
   } catch {
     return {
       status: "error",
@@ -36,26 +50,26 @@ export async function lookupCheckout(
       },
       fieldErrors: {},
       formError:
-        "We could not look up that pickup right now. Please try again.",
+        "Staff authorization could not be verified. Reopen the staff link.",
     };
   }
 }
 
 export async function confirmCheckout(
-  staffCode: string,
   pickupCode: string,
   idempotencyKey: string,
   _previousState: CheckoutConfirmationState,
   formData: FormData,
 ): Promise<CheckoutConfirmationState> {
   const input = {
-    binNumber: formString(formData, "binNumber"),
-    pantherCardCollected: formString(formData, "pantherCardCollected"),
+    binNumber: formValue(formData, "binNumber"),
+    pantherCardCollected: formValue(formData, "pantherCardCollected"),
   };
   try {
+    const auth = await authorize();
     return await executeCheckout(
-      createAdminClient(),
-      staffCode,
+      auth.client,
+      auth.sessionId,
       pickupCode,
       idempotencyKey,
       input,
@@ -68,19 +82,20 @@ export async function confirmCheckout(
         pantherCardCollected: input.pantherCardCollected === "on",
       },
       fieldErrors: {},
-      formError: "We could not complete checkout right now. Please try again.",
+      formError:
+        "Staff authorization could not be verified. Reopen the staff link.",
     };
   }
 }
 
 export async function lookupReturn(
-  staffCode: string,
   _previousState: ReturnLookupState,
   formData: FormData,
 ): Promise<ReturnLookupState> {
-  const input = { binNumber: formString(formData, "binNumber") };
+  const input = { binNumber: formValue(formData, "binNumber") };
   try {
-    return await executeReturnLookup(createAdminClient(), staffCode, input);
+    const auth = await authorize();
+    return await executeReturnLookup(auth.client, auth.sessionId, input);
   } catch {
     return {
       status: "error",
@@ -89,25 +104,25 @@ export async function lookupReturn(
       },
       fieldErrors: {},
       formError:
-        "We could not look up that return right now. Please try again.",
+        "Staff authorization could not be verified. Reopen the staff link.",
     };
   }
 }
 
 export async function confirmReturn(
-  staffCode: string,
   idempotencyKey: string,
   _previousState: ReturnConfirmationState,
   formData: FormData,
 ): Promise<ReturnConfirmationState> {
   const input = {
-    binNumber: formString(formData, "binNumber"),
-    pantherCardReturned: formString(formData, "pantherCardReturned"),
+    binNumber: formValue(formData, "binNumber"),
+    pantherCardReturned: formValue(formData, "pantherCardReturned"),
   };
   try {
+    const auth = await authorize();
     return await executeReturn(
-      createAdminClient(),
-      staffCode,
+      auth.client,
+      auth.sessionId,
       idempotencyKey,
       input,
     );
@@ -119,7 +134,8 @@ export async function confirmReturn(
         pantherCardReturned: input.pantherCardReturned === "on",
       },
       fieldErrors: {},
-      formError: "We could not complete check-in right now. Please try again.",
+      formError:
+        "Staff authorization could not be verified. Reopen the staff link.",
     };
   }
 }
